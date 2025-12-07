@@ -86,7 +86,7 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 1. **环境检查**：确认当前运行在 PVE 环境中
 2. **获取最新版本**：从 GitHub API 获取最新的 release 信息
 3. **版本选择**：用户选择 512MB 或 3072MB ROM 版本
-4. **格式选择**：用户选择固件格式（img.gz、qcow2、vmdk）
+4. **格式选择**：用户选择固件格式（img.gz、qcow2）
 5. **启动方式选择**：用户选择 BIOS 或 EFI (UEFI) 启动模式
 6. **固件检测**：检查并自动安装所需的固件（EFI模式）
 7. **下载 ROM**：下载并处理选中的 ROM 文件（根据启动模式智能匹配）

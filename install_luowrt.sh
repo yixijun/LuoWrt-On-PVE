@@ -148,10 +148,9 @@ select_rom_version() {
     echo -e "\n${BLUE}选择文件格式:${NC}"
     echo "1) img.gz (推荐，兼容性最好)"
     echo "2) qcow2 (QCOW2格式)"
-    echo "3) vmdk (VMware格式)"
 
     while true; do
-        read -p "请选择文件格式 (1-3): " format_choice
+        read -p "请选择文件格式 (1-2): " format_choice
         case $format_choice in
             1)
                 FILE_FORMAT="img.gz"
@@ -163,13 +162,8 @@ select_rom_version() {
                 print_success "已选择 qcow2 格式"
                 break
                 ;;
-            3)
-                FILE_FORMAT="vmdk"
-                print_success "已选择 vmdk 格式"
-                break
-                ;;
             *)
-                print_error "无效选择，请输入1、2或3"
+                print_error "无效选择，请输入1或2"
                 ;;
         esac
     done
@@ -185,7 +179,7 @@ select_rom_version() {
             1)
                 BOOT_MODE="bios"
                 BOOT_FIRMWARE=""
-                BOOT_MACHINE="q35"
+                BOOT_MACHINE="pc"
                 print_success "已选择 BIOS 启动模式"
                 break
                 ;;
@@ -213,10 +207,7 @@ select_rom_version() {
                 "qcow2")
                     FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.qcow2$"
                     ;;
-                "vmdk")
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.vmdk$"
-                    ;;
-            esac
+                        esac
             print_info "EFI模式：优先搜索带有 '-efi' 标识的文件"
             ;;
         "bios")
@@ -228,10 +219,7 @@ select_rom_version() {
                 "qcow2")
                     FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.qcow2$"
                     ;;
-                "vmdk")
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.vmdk$"
-                    ;;
-            esac
+                            esac
             print_info "BIOS模式：将搜索标准版本文件（排除EFI和UEFI版本）"
             ;;
     esac
@@ -408,8 +396,8 @@ download_rom() {
                 IMAGE_FILE="$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
             fi
             ;;
-        "qcow2"|"vmdk")
-            # qcow2和vmdk格式无需解压
+        "qcow2")
+            # qcow2格式无需解压
             if [ -f "$DOWNLOAD_DIR/$FILENAME" ]; then
                 print_warning "文件已存在，跳过下载"
                 IMAGE_FILE="$DOWNLOAD_DIR/$FILENAME"
@@ -720,6 +708,10 @@ configure_vm() {
 
 # 检查并安装EFI固件
 check_efi_firmware() {
+    # 初始化变量
+    BOOT_MACHINE="q35"
+    BOOT_FIRMWARE="ovmf"
+
     if [ "$BOOT_MODE" = "efi" ]; then
         print_info "检查EFI固件可用性..."
 
@@ -784,6 +776,13 @@ check_efi_firmware() {
             print_success "EFI固件可用"
         fi
     fi
+
+    # BIOS模式设置
+    if [ "$BOOT_MODE" = "bios" ]; then
+        BOOT_MACHINE="pc"
+        BOOT_FIRMWARE=""
+    fi
+
     return 0
 }
 
@@ -812,7 +811,8 @@ create_vm() {
 
     # 添加EFI固件配置
     if [ "$BOOT_MODE" = "efi" ]; then
-        VM_CREATE_CMD="$VM_CREATE_CMD --bios ovmf --efidisk0 \"$VM_STORAGE:1,format=qcow2,efitype=4m\""
+        VM_CREATE_CMD="$VM_CREATE_CMD --bios ovmf --efidisk0 \"$VM_STORAGE:1,efitype=4m\""
+        print_info "EFI模式：将创建EFI磁盘"
     fi
 
     # 创建虚拟机
@@ -820,21 +820,35 @@ create_vm() {
 
     # 导入磁盘镜像
     print_info "正在导入磁盘镜像..."
-    qm importdisk "$NEXT_ID" "$IMAGE_FILE" "$VM_STORAGE"
+    if qm importdisk "$NEXT_ID" "$IMAGE_FILE" "$VM_STORAGE"; then
+        print_success "磁盘镜像导入成功"
+        DISK_PATH="$VM_STORAGE:vm-$NEXT_ID-disk-0"
+        print_info "附加磁盘: $DISK_PATH"
 
-    # 配置磁盘
-    if [ "$BOOT_MODE" = "efi" ]; then
-        qm set "$NEXT_ID" \
-            --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
-            --efidisk0 "$VM_STORAGE:vm-$NEXT_ID-efidisk-0" \
+        # 附加主系统磁盘并设置启动选项
+        if qm set "$NEXT_ID" \
+            --scsi0 "$DISK_PATH" \
             --boot c \
-            --agent enabled=1
+            --agent enabled=1; then
+            print_success "磁盘配置成功"
+        else
+            print_error "磁盘配置失败"
+            return 1
+        fi
+
+        # EFI模式的额外配置
+        if [ "$BOOT_MODE" = "efi" ]; then
+            # 验证EFI磁盘是否正确创建
+            if qm config "$NEXT_ID" | grep -q "efidisk0"; then
+                print_success "EFI磁盘配置已完成"
+            else
+                print_error "EFI磁盘创建失败"
+                return 1
+            fi
+        fi
     else
-        qm set "$NEXT_ID" \
-            --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
-            --ide2 "$VM_STORAGE:cloudinit" \
-            --boot c \
-            --agent enabled=1
+        print_error "磁盘镜像导入失败"
+        return 1
     fi
 
     # 设置启动顺序
