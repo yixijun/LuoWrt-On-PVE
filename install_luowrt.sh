@@ -595,6 +595,13 @@ get_storage_pools() {
         exit 1
     fi
 
+    print_info "获取到的存储信息:"
+    echo "$STORAGE_INFO" | while IFS= read -r line; do
+        if [ -n "$line" ]; then
+            print_info "  $line"
+        fi
+    done
+
     # 解析存储池信息
     STORAGE_LIST=()
     STORAGE_MAP=()
@@ -606,6 +613,8 @@ get_storage_pools() {
             STORAGE_SIZE=$(echo "$line" | awk '{print $3}')
             STORAGE_USED=$(echo "$line" | awk '{print $4}')
             STORAGE_AVAIL=$(echo "$line" | awk '{print $5}')
+
+            print_info "处理存储池: $STORAGE_NAME (类型: $STORAGE_TYPE)"
 
             # 获取存储池支持的格式
             SUPPORTED_FORMATS=$(get_storage_formats "$STORAGE_NAME")
@@ -622,43 +631,86 @@ get_storage_pools() {
 get_storage_formats() {
     local storage_name="$1"
 
-    # 使用pvesm命令获取存储池详细信息
-    storage_info=$(pvesm status "$storage_name" 2>/dev/null | awk 'NR>1' | head -n1)
+    print_info "检测存储池 $storage_name 的支持格式..."
 
-    if [ -z "$storage_info" ]; then
-        echo "unknown"
-        return
+    # 方法1：尝试从全局STORAGE_INFO中获取
+    local found_storage=""
+    for storage_item in "${STORAGE_LIST[@]}"; do
+        if [ "$storage_item" = "$storage_name" ]; then
+            found_storage="$storage_item"
+            break
+        fi
+    done
+
+    if [ -n "$found_storage" ]; then
+        # 从已有的存储信息中提取类型
+        storage_line=$(echo "$STORAGE_INFO" | grep "^$storage_name ")
+        if [ -n "$storage_line" ]; then
+            storage_type=$(echo "$storage_line" | awk '{print $2}')
+            print_info "检测到存储类型: $storage_type"
+        else
+            print_warning "无法从STORAGE_INFO中找到存储类型"
+            storage_type=""
+        fi
+    else
+        print_warning "存储池 $storage_name 不在已知列表中"
+        storage_type=""
     fi
 
-    storage_type=$(echo "$storage_info" | awk '{print $2}')
+    # 方法2：如果上面失败，尝试直接获取
+    if [ -z "$storage_type" ]; then
+        print_info "尝试直接获取存储池信息..."
+        storage_info=$(pvesm status "$storage_name" 2>/dev/null | awk 'NR>1' | head -n1)
+        if [ -n "$storage_info" ]; then
+            storage_type=$(echo "$storage_info" | awk '{print $2}')
+            print_info "直接获取到存储类型: $storage_type"
+        else
+            print_warning "无法获取存储池类型，使用默认配置"
+            storage_type="unknown"
+        fi
+    fi
 
+    # 根据存储类型返回支持的格式
     case "$storage_type" in
         "lvm-thin")
-            echo "raw"  # LVM Thin 只支持 raw 格式
+            echo "raw"
+            print_info "LVM Thin 存储：支持 raw 格式"
             ;;
         "lvm")
-            echo "raw"  # LVM 只支持 raw 格式
+            echo "raw"
+            print_info "LVM 存储：支持 raw 格式"
             ;;
         "dir")
-            echo "qcow2,raw,vmdk"  # 目录存储支持多种格式
+            echo "qcow2,raw,vmdk"
+            print_info "目录存储：支持 qcow2, raw, vmdk 格式"
             ;;
         "nfs")
-            echo "qcow2,raw,vmdk"  # NFS 支持多种格式
+            echo "qcow2,raw,vmdk"
+            print_info "NFS 存储：支持 qcow2, raw, vmdk 格式"
             ;;
         "zfspool")
-            echo "raw,qcow2"  # ZFS 支持 raw 和 qcow2
+            echo "raw,qcow2"
+            print_info "ZFS 存储：支持 raw, qcow2 格式"
             ;;
         "btrfs")
-            echo "raw,qcow2"  # Btrfs 支持 raw 和 qcow2
+            echo "raw,qcow2"
+            print_info "Btrfs 存储：支持 raw, qcow2 格式"
             ;;
         "cephfs")
-            echo "raw"  # CephFS 通常只支持 raw
+            echo "raw"
+            print_info "CephFS 存储：支持 raw 格式"
             ;;
         "rbd")
-            echo "raw"  # Ceph RBD 只支持 raw
+            echo "raw"
+            print_info "Ceph RBD 存储：支持 raw 格式"
+            ;;
+        "unknown"|"")
+            echo "qcow2,raw,vmdk"
+            print_warning "未知存储类型，假设支持常见格式：qcow2, raw, vmdk"
             ;;
         *)
-            echo "qcow2,raw,vmdk"  # 默认假设支持常见格式
+            echo "qcow2,raw,vmdk"
+            print_info "存储类型 $storage_type：假设支持 qcow2, raw, vmdk 格式"
             ;;
     esac
 }
@@ -842,7 +894,20 @@ check_format_compatibility() {
 
     print_info "检查文件格式兼容性..."
     print_info "当前文件格式: $current_format"
+    print_info "存储池: $VM_STORAGE"
     print_info "存储池支持格式: $supported_formats"
+
+    # 调试信息
+    print_info "调试信息:"
+    print_info "  - STORAGE_MAP条目: ${STORAGE_MAP[$VM_STORAGE]}"
+    print_info "  - SUPPORTED_FORMATS变量: $SUPPORTED_FORMATS"
+
+    # 如果支持的格式是 unknown 或空，提供默认值
+    if [ "$supported_formats" = "unknown" ] || [ -z "$supported_formats" ]; then
+        print_warning "无法检测存储池支持格式，使用默认配置"
+        supported_formats="qcow2,raw,vmdk"
+        print_info "设置默认支持格式: $supported_formats"
+    fi
 
     # 检查当前格式是否被支持
     if echo "$supported_formats" | grep -q -w "$current_format"; then
