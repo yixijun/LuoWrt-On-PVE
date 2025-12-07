@@ -6,10 +6,10 @@
 
 - 🔄 自动从 GitHub 下载最新的 LuoWrt release
 - 💾 支持 512MB 和 3072MB ROM 版本选择
-- 💿 支持固件格式：img.gz、qcow2（PVE原生支持）
+- 💿 支持固件格式：img.gz（最可靠和兼容性最好的格式）
 - 🔄 支持 BIOS 和 EFI (UEFI) 启动模式选择
 - 🔧 自动检测和安装 EFI 固件
-- 💾 PVE原生格式支持（qcow2、raw），无需格式转换
+- 💾 最可靠的格式：img.gz → raw（所有PVE存储都完美支持）
 - 📊 支持所有PVE存储类型：LVM Thin、LVM、ZFS、NFS、目录存储等
 - 🖥️ 自动获取下一个可用的 VM ID
 - 💽 自动检测并选择 PVE 存储池
@@ -68,8 +68,7 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 - LuoWrt-3072：3072MB RAM版本
 
 **支持的格式：**
-- img.gz：推荐格式，兼容性最好（需要解压）
-- qcow2：QCOW2格式，PVE原生支持（直接导入，无需转换）
+- img.gz：推荐格式，最可靠和兼容性最好（自动解压为 raw 格式）
 
 **启动模式：**
 - BIOS：传统启动模式，兼容性最好，适用于大多数情况
@@ -77,9 +76,8 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 
 **文件名示例：**
 - `LuoWrt-512-x86-64-generic-squashfs-combined.img.gz` (BIOS版本)
-- `LuoWrt-3072-x86-64-generic-squashfs-combined.qcow2` (BIOS版本)
-- `LuoWrt-3072-x86-64-generic-squashfs-combined-efi.qcow2` (EFI版本)
 - `LuoWrt-512-x86-64-uefi-gpt-squashfs-combined.img.gz` (EFI版本)
+- `LuoWrt-512-x86-64-generic-squashfs-combined-efi.img.gz` (EFI版本)
 
 **注意：EFI模式会自动搜索带有 "-efi"、"uefi" 等标识的文件。**
 
@@ -115,11 +113,8 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 请选择ROM版本 (1-2): 1
 [SUCCESS] 已选择512MB版本
 
-选择文件格式:
-1) img.gz (推荐，兼容性最好)
-2) qcow2 (QCOW2格式，PVE原生支持)
-请选择文件格式 (1-2): 1
-[SUCCESS] 已选择 img.gz 格式
+[INFO] 使用 img.gz 格式（最可靠和兼容性最好的格式）
+[SUCCESS] 文件格式确认
 
 选择启动方式:
 1) BIOS (传统启动模式，兼容性好)
@@ -151,7 +146,7 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 配置确认:
 VM ID: 105
 ROM版本: 512MB
-文件格式: img.gz
+文件格式: img.gz (将解压为 raw 格式)
 启动方式: bios
 存储池: local-lvm
 CPU: 2 cores
@@ -275,10 +270,11 @@ Memory: 1024MB
    qm set 109 --scsi0 local:109/vm-109-disk-0 --boot c
    ```
 
-   **PVE 原生格式支持：**
-   - qcow2：完全原生支持，无需任何转换
-   - raw：完全原生支持，性能最佳
-   - PVE 会自动处理不同存储类型上的格式兼容性
+   **img.gz 格式的优势：**
+   - 最可靠和兼容性最好的格式
+   - 自动解压为 raw 格式，获得最佳性能
+   - 所有PVE存储类型都完美支持 raw 格式
+   - 避免了其他格式可能的兼容性问题
 
 9. **EFI启动相关问题**
    - 脚本会自动检测并尝试安装EFI固件
