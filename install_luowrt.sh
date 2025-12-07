@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# OpenWrt 自动安装脚本 for PVE
+# LuoWrt 自动安装脚本 for PVE
 # 作者: Assistant
-# 功能: 自动从GitHub下载最新OpenWrt release并在PVE中创建虚拟机
+# 功能: 自动从GitHub下载最新LuoWrt release并在PVE中创建虚拟机
 
 set -e
 
@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 
 # 配置变量
 GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
-DOWNLOAD_DIR="/tmp/openwrt"
+DOWNLOAD_DIR="/tmp/luowrt"
 VM_STORAGE=""  # PVE存储名称，将由用户选择
 
 # 创建下载目录
@@ -26,7 +26,7 @@ check_disk_space() {
     print_info "检查磁盘空间..."
 
     # 定义多个备选临时目录（按优先级排序）
-    TEMP_DIRS=("/tmp/openwrt" "/var/tmp/openwrt" "/root/tmp/openwrt" "/opt/tmp/openwrt")
+    TEMP_DIRS=("/tmp/luowrt" "/var/tmp/luowrt" "/root/tmp/luowrt" "/opt/tmp/luowrt")
 
     # 为每个目录检查可用空间
     for temp_dir in "${TEMP_DIRS[@]}"; do
@@ -155,19 +155,16 @@ select_rom_version() {
         case $format_choice in
             1)
                 FILE_FORMAT="img.gz"
-                FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.img\.gz"
                 print_success "已选择 img.gz 格式"
                 break
                 ;;
             2)
                 FILE_FORMAT="qcow2"
-                FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.qcow2$"
                 print_success "已选择 qcow2 格式"
                 break
                 ;;
             3)
                 FILE_FORMAT="vmdk"
-                FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.vmdk$"
                 print_success "已选择 vmdk 格式"
                 break
                 ;;
@@ -176,6 +173,66 @@ select_rom_version() {
                 ;;
         esac
     done
+
+    # 选择启动方式
+    echo -e "\n${BLUE}选择启动方式:${NC}"
+    echo "1) BIOS (传统启动模式，兼容性好)"
+    echo "2) EFI (UEFI启动模式，现代系统推荐)"
+
+    while true; do
+        read -p "请选择启动方式 (1-2): " boot_choice
+        case $boot_choice in
+            1)
+                BOOT_MODE="bios"
+                BOOT_FIRMWARE=""
+                BOOT_MACHINE="q35"
+                print_success "已选择 BIOS 启动模式"
+                break
+                ;;
+            2)
+                BOOT_MODE="efi"
+                BOOT_FIRMWARE="ovmf"
+                BOOT_MACHINE="q35"
+                print_success "已选择 EFI (UEFI) 启动模式"
+                break
+                ;;
+            *)
+                print_error "无效选择，请输入1或2"
+                ;;
+        esac
+    done
+
+    # 根据启动方式和文件格式确定文件匹配模式
+    case "$BOOT_MODE" in
+        "efi")
+            case "$FILE_FORMAT" in
+                "img.gz")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.img\.gz"
+                    ;;
+                "qcow2")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.qcow2$"
+                    ;;
+                "vmdk")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.vmdk$"
+                    ;;
+            esac
+            print_info "EFI模式：将搜索带有 '-efi' 标识的文件"
+            ;;
+        "bios")
+            case "$FILE_FORMAT" in
+                "img.gz")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.img\.gz"
+                    ;;
+                "qcow2")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.qcow2$"
+                    ;;
+                "vmdk")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.vmdk$"
+                    ;;
+            esac
+            print_info "BIOS模式：将搜索标准版本文件"
+            ;;
+    esac
 }
 
 # 下载选中的ROM
@@ -238,23 +295,67 @@ download_rom() {
                 fi
 
                 # 创建临时文件路径，确保目标文件名唯一
-                temp_output_file="${DOWNLOAD_DIR}/openwrt_temp_$$.img"
+                temp_compressed_file="${DOWNLOAD_DIR}/temp_compressed_$$.gz"
+                temp_output_file="${DOWNLOAD_DIR}/luowrt_temp_$$.img"
 
-                # 使用更可靠的流式解压方法
-                print_info "开始下载并解压到临时文件..."
-                if wget --progress=bar:force -O - "$SELECTED_URL" 2>/dev/null | gunzip -c > "$temp_output_file"; then
-                    # 检解压是否成功且文件不为空
-                    if [ -s "$temp_output_file" ]; then
-                        mv "$temp_output_file" "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
-                        print_success "下载并解压完成"
-                    else
-                        print_error "解压后的文件为空"
-                        rm -f "$temp_output_file"
-                        exit 1
-                    fi
+                # 先下载压缩文件到临时位置
+                print_info "第一步：下载压缩文件..."
+                if ! wget --progress=bar:force -O "$temp_compressed_file" "$SELECTED_URL"; then
+                    print_error "下载失败"
+                    rm -f "$temp_compressed_file" "$temp_output_file"
+                    exit 1
+                fi
+
+                print_info "第二步：验证下载文件..."
+                if [ ! -s "$temp_compressed_file" ]; then
+                    print_error "下载的文件为空"
+                    rm -f "$temp_compressed_file" "$temp_output_file"
+                    exit 1
+                fi
+
+                # 使用智能解压函数
+                print_info "第三步：智能解压文件..."
+                if smart_decompress "$temp_compressed_file" "$temp_output_file" "$FILENAME"; then
+                    # 清理临时压缩文件
+                    rm -f "$temp_compressed_file"
                 else
-                    print_error "下载或解压失败"
-                    # 清理临时文件
+                    print_error "智能解压失败"
+                    rm -f "$temp_compressed_file" "$temp_output_file"
+                    exit 1
+                fi
+
+                # 验证解压结果
+                if [ -s "$temp_output_file" ]; then
+                    # 检查是否是有效的磁盘镜像
+                    file_size=$(stat -c%s "$temp_output_file")
+                    if [ "$file_size" -lt 50000000 ]; then  # 小于50MB可能有问题
+                        print_warning "解压后文件较小 ($file_size bytes)，可能不完整"
+                        print_info "文件信息: $(file "$temp_output_file")"
+
+                        # 询问用户是否继续
+                        while true; do
+                            read -p "文件较小，是否继续使用？(y/n): " continue_choice
+                            case $continue_choice in
+                                [Yy]* )
+                                    break
+                                    ;;
+                                [Nn]* )
+                                    print_info "用户取消操作"
+                                    rm -f "$temp_output_file"
+                                    exit 1
+                                    ;;
+                                *)
+                                    print_error "请输入 y 或 n"
+                                    ;;
+                            esac
+                        done
+                    fi
+
+                    mv "$temp_output_file" "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
+                    final_size=$(ls -lh "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE" | awk '{print $5}')
+                    print_success "文件处理完成 (大小: $final_size)"
+                else
+                    print_error "处理后的文件为空或无效"
                     rm -f "$temp_output_file"
                     exit 1
                 fi
@@ -298,6 +399,98 @@ download_rom() {
     print_success "文件准备完成: $IMAGE_FILE (大小: $file_size)"
 }
 
+# 智能解压函数，支持多种格式
+smart_decompress() {
+    local input_file="$1"
+    local output_file="$2"
+    local filename="$3"
+
+    print_info "智能解压: $input_file -> $output_file"
+
+    # 检查文件类型
+    file_type=$(file -b "$input_file")
+    print_info "检测到文件类型: $file_type"
+
+    # 根据文件类型选择解压方法
+    case "$file_type" in
+        *"gzip"*|*"compress"*)
+            print_info "使用gzip解压..."
+            if ! gunzip -c "$input_file" > "$output_file" 2>/dev/null; then
+                print_warning "标准gzip解压失败，尝试强制解压..."
+                gunzip -cf "$input_file" > "$output_file" 2>&1 || {
+                    print_error "gzip解压失败"
+                    return 1
+                }
+            fi
+            ;;
+        *"xz"*)
+            print_info "使用xz解压..."
+            xz -dc "$input_file" > "$output_file" || {
+                print_error "xz解压失败"
+                return 1
+            }
+            ;;
+        *"bzip2"*)
+            print_info "使用bzip2解压..."
+            bzip2 -dc "$input_file" > "$output_file" || {
+                print_error "bzip2解压失败"
+                return 1
+            }
+            ;;
+        *"data"*|*"ASCII"*|*"ISO-8859"*|*"empty"*)
+            print_warning "文件未识别为压缩格式，可能是已解压的镜像文件"
+            # 检查是否是有效的磁盘镜像
+            if [ "$(stat -c%s "$input_file")" -gt 50000000 ]; then  # 大于50MB
+                print_info "文件较大，直接复制为镜像文件"
+                cp "$input_file" "$output_file"
+            else
+                print_error "文件太小，可能不是有效的镜像文件"
+                return 1
+            fi
+            ;;
+        *)
+            # 尝试根据文件扩展名解压
+            case "$filename" in
+                *.gz)
+                    print_info "根据扩展名使用gzip解压..."
+                    gunzip -c "$input_file" > "$output_file" || {
+                        print_error "根据扩展名的gzip解压失败"
+                        return 1
+                    }
+                    ;;
+                *.xz)
+                    print_info "根据扩展名使用xz解压..."
+                    xz -dc "$input_file" > "$output_file" || {
+                        print_error "xz解压失败"
+                        return 1
+                    }
+                    ;;
+                *.bz2)
+                    print_info "根据扩展名使用bzip2解压..."
+                    bzip2 -dc "$input_file" > "$output_file" || {
+                        print_error "bzip2解压失败"
+                        return 1
+                    }
+                    ;;
+                *)
+                    print_error "无法识别的文件格式"
+                    print_info "文件信息: $(file "$input_file")"
+                    return 1
+                    ;;
+            esac
+            ;;
+    esac
+
+    # 验证解压结果
+    if [ -s "$output_file" ]; then
+        print_success "解压成功"
+        return 0
+    else
+        print_error "解压后文件为空"
+        return 1
+    fi
+}
+
 # 清理临时文件的辅助函数
 cleanup_temp_files() {
     print_info "清理临时文件..."
@@ -312,7 +505,7 @@ cleanup_temp_files() {
 
     # 清理当前用户的临时文件
     find /tmp -user "$(whoami)" -name "*.tmp" -delete 2>/dev/null || true
-    find /tmp -user "$(whoami)" -name "openwrt_*" -delete 2>/dev/null || true
+    find /tmp -user "$(whoami)" -name "luowrt_*" -delete 2>/dev/null || true
 
     print_info "清理完成"
 }
@@ -452,33 +645,124 @@ configure_vm() {
     done
 }
 
+# 检查并安装EFI固件
+check_efi_firmware() {
+    if [ "$BOOT_MODE" = "efi" ]; then
+        print_info "检查EFI固件可用性..."
+
+        # 检查PVE中是否有OVMF固件（多种可能的路径）
+        firmware_found=false
+
+        # 检查常见的OVMF固件路径
+        if ls /usr/share/pve-edk2-firmware/*OVMF* 1>/dev/null 2>&1; then
+            firmware_found=true
+        elif ls /usr/share/ovmf/OVMF.fd 1>/dev/null 2>&1; then
+            firmware_found=true
+        elif ls /usr/share/ovmf/OVMF_CODE.fd 1>/dev/null 2>&1; then
+            firmware_found=true
+        elif ls /usr/share/qemu/ovmf-x86_64.bin 1>/dev/null 2>&1; then
+            firmware_found=true
+        elif ls /usr/share/OVMF/OVMF.fd 1>/dev/null 2>&1; then
+            firmware_found=true
+        fi
+
+        if [ "$firmware_found" = false ]; then
+            print_warning "未检测到EFI固件，尝试安装..."
+
+            # 尝试安装OVMF固件（针对Debian/Ubuntu）
+            if command -v apt-get &> /dev/null; then
+                print_info "正在安装OVMF固件..."
+                if apt-get update && apt-get install -y pve-edk2-firmware ovmf; then
+                    print_success "EFI固件安装完成"
+                else
+                    print_error "EFI固件安装失败，回退到BIOS模式"
+                    BOOT_MODE="bios"
+                    BOOT_FIRMWARE=""
+                    return 1
+                fi
+            elif command -v yum &> /dev/null; then
+                print_info "正在安装OVMF固件..."
+                if yum install -y edk2-ovmf; then
+                    print_success "EFI固件安装完成"
+                else
+                    print_error "EFI固件安装失败，回退到BIOS模式"
+                    BOOT_MODE="bios"
+                    BOOT_FIRMWARE=""
+                    return 1
+                fi
+            elif command -v dnf &> /dev/null; then
+                print_info "正在安装OVMF固件..."
+                if dnf install -y edk2-ovmf; then
+                    print_success "EFI固件安装完成"
+                else
+                    print_error "EFI固件安装失败，回退到BIOS模式"
+                    BOOT_MODE="bios"
+                    BOOT_FIRMWARE=""
+                    return 1
+                fi
+            else
+                print_warning "无法自动安装EFI固件，请手动安装 pve-edk2-firmware 或 ovmf"
+                print_info "回退到BIOS模式"
+                BOOT_MODE="bios"
+                BOOT_FIRMWARE=""
+                return 1
+            fi
+        else
+            print_success "EFI固件可用"
+        fi
+    fi
+    return 0
+}
+
 # 创建虚拟机
 create_vm() {
     print_info "正在创建虚拟机..."
 
-    VM_NAME="OpenWrt-$NEXT_ID"
+    VM_NAME="LuoWrt"
 
-    # 创建虚拟机
-    qm create "$NEXT_ID" \
-        --name "$VM_NAME" \
-        --memory "$memory_size" \
-        --cores "$cpu_cores" \
+    # 检查EFI固件
+    if ! check_efi_firmware; then
+        print_warning "使用BIOS启动模式"
+    fi
+
+    # 基本虚拟机创建参数
+    VM_CREATE_CMD="qm create \"$NEXT_ID\" \
+        --name \"$VM_NAME\" \
+        --memory \"$memory_size\" \
+        --cores \"$cpu_cores\" \
+        --machine \"$BOOT_MACHINE\" \
         --net0 virtio,bridge=vmbr0 \
         --serial0 socket \
         --vga serial0 \
         --bootdisk scsi0 \
-        --scsihw virtio-scsi-pci
+        --scsihw virtio-scsi-pci"
+
+    # 添加EFI固件配置
+    if [ "$BOOT_MODE" = "efi" ]; then
+        VM_CREATE_CMD="$VM_CREATE_CMD --bios ovmf --efidisk0 \"$VM_STORAGE:1,format=qcow2,efitype=4m\""
+    fi
+
+    # 创建虚拟机
+    eval "$VM_CREATE_CMD"
 
     # 导入磁盘镜像
     print_info "正在导入磁盘镜像..."
     qm importdisk "$NEXT_ID" "$IMAGE_FILE" "$VM_STORAGE"
 
     # 配置磁盘
-    qm set "$NEXT_ID" \
-        --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
-        --ide2 "$VM_STORAGE:cloudinit" \
-        --boot c \
-        --agent enabled=1
+    if [ "$BOOT_MODE" = "efi" ]; then
+        qm set "$NEXT_ID" \
+            --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
+            --efidisk0 "$VM_STORAGE:vm-$NEXT_ID-efidisk-0" \
+            --boot c \
+            --agent enabled=1
+    else
+        qm set "$NEXT_ID" \
+            --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
+            --ide2 "$VM_STORAGE:cloudinit" \
+            --boot c \
+            --agent enabled=1
+    fi
 
     # 设置启动顺序
     qm set "$NEXT_ID" --boot order=scsi0
@@ -496,6 +780,10 @@ create_vm() {
     print_info "CPU: $cpu_cores cores"
     print_info "Memory: ${memory_size}MB"
     print_info "Storage: $VM_STORAGE"
+    print_info "Boot Mode: $BOOT_MODE"
+    if [ "$BOOT_MODE" = "efi" ]; then
+        print_info "EFI Firmware: $BOOT_FIRMWARE"
+    fi
 }
 
 # 清理临时文件
@@ -507,7 +795,7 @@ cleanup() {
 
 # 主函数
 main() {
-    echo -e "${GREEN}=== OpenWrt 自动安装脚本 ===${NC}"
+    echo -e "${GREEN}=== LuoWrt 自动安装脚本 ===${NC}"
     echo -e "${GREEN}适用于 Proxmox VE 环境${NC}\n"
 
     check_pve_environment
@@ -531,6 +819,7 @@ main() {
     echo "VM ID: $NEXT_ID"
     echo "ROM版本: ${ROM_SIZE}MB"
     echo "文件格式: $FILE_FORMAT"
+    echo "启动方式: $BOOT_MODE"
     echo "存储池: $VM_STORAGE"
     echo "CPU: $cpu_cores cores"
     echo "Memory: ${memory_size}MB"
