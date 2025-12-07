@@ -144,9 +144,35 @@ select_rom_version() {
         esac
     done
 
-    # 使用 img.gz 格式（最兼容的格式）
-    FILE_FORMAT="img.gz"
-    print_info "使用 img.gz 格式（最可靠和兼容性最好的格式）"
+    # 选择文件格式
+    echo -e "\n${BLUE}选择文件格式:${NC}"
+    echo "1) img.gz (推荐，兼容性最好)"
+    echo "2) qcow2 (QCOW2格式)"
+    echo "3) vmdk (VMware格式)"
+
+    while true; do
+        read -p "请选择文件格式 (1-3): " format_choice
+        case $format_choice in
+            1)
+                FILE_FORMAT="img.gz"
+                print_success "已选择 img.gz 格式"
+                break
+                ;;
+            2)
+                FILE_FORMAT="qcow2"
+                print_success "已选择 qcow2 格式"
+                break
+                ;;
+            3)
+                FILE_FORMAT="vmdk"
+                print_success "已选择 vmdk 格式"
+                break
+                ;;
+            *)
+                print_error "无效选择，请输入1、2或3"
+                ;;
+        esac
+    done
 
     # 选择启动方式
     echo -e "\n${BLUE}选择启动方式:${NC}"
@@ -176,24 +202,44 @@ select_rom_version() {
         esac
     done
 
-    # 根据启动方式确定文件匹配模式
+    # 根据启动方式和文件格式确定文件匹配模式
     case "$BOOT_MODE" in
         "efi")
-            # EFI模式：搜索包含 -efi 或 uefi 的文件
-            FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.img\.gz"
+            case "$FILE_FORMAT" in
+                "img.gz")
+                    # EFI模式：优先搜索包含 -efi 的文件，如果没有则搜索包含 uefi 的文件
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.img\.gz"
+                    ;;
+                "qcow2")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.qcow2$"
+                    ;;
+                "vmdk")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.vmdk$"
+                    ;;
+            esac
             print_info "EFI模式：优先搜索带有 '-efi' 标识的文件"
             ;;
         "bios")
-            # BIOS模式：搜索标准版本，排除EFI版本
-            FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.img\.gz"
-            print_info "BIOS模式：将搜索标准版本文件（排除EFI版本）"
+            case "$FILE_FORMAT" in
+                "img.gz")
+                    # BIOS模式：明确排除EFI和UEFI版本，只搜索标准版本
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.img\.gz"
+                    ;;
+                "qcow2")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.qcow2$"
+                    ;;
+                "vmdk")
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.vmdk$"
+                    ;;
+            esac
+            print_info "BIOS模式：将搜索标准版本文件（排除EFI和UEFI版本）"
             ;;
     esac
 }
 
 # 下载选中的ROM
 download_rom() {
-    print_info "正在搜索$ROM_SIZE MB img.gz 格式的下载链接..."
+    print_info "正在搜索$ROM_SIZE MB $FILE_FORMAT 格式的下载链接..."
     print_info "启动模式: $BOOT_MODE"
 
     # 调试：显示所有可用的下载链接
@@ -243,7 +289,7 @@ download_rom() {
     fi
 
     if [ -z "$SELECTED_URL" ]; then
-        print_error "未找到$ROM_SIZE MB img.gz 格式的下载链接"
+        print_error "未找到$ROM_SIZE MB $FILE_FORMAT 格式的下载链接"
         exit 1
     fi
 
@@ -257,108 +303,137 @@ download_rom() {
         exit 1
     fi
 
-    # 处理 img.gz 格式文件
-    UNCOMPRESSED_FILE="${FILENAME%.gz}"
+    # 根据文件格式处理
+    case "$FILE_FORMAT" in
+        "img.gz")
+            UNCOMPRESSED_FILE="${FILENAME%.gz}"
 
-    # 检查解压后文件是否已存在
-    if [ -f "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE" ]; then
-        print_warning "解压文件已存在，跳过下载和解压"
-        IMAGE_FILE="$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
-    else
-        # 对于img.gz格式，使用更安全的流式解压方法
-        print_info "正在下载并解压文件（流式处理，节省空间）..."
-        print_info "临时目录: $DOWNLOAD_DIR，可用空间: ${current_space}MB"
+            # 检查解压后文件是否已存在
+            if [ -f "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE" ]; then
+                print_warning "解压文件已存在，跳过下载和解压"
+                IMAGE_FILE="$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
+            else
+                # 对于img.gz格式，使用更安全的流式解压方法
+                print_info "正在下载并解压文件（流式处理，节省空间）..."
+                print_info "临时目录: $DOWNLOAD_DIR，可用空间: ${current_space}MB"
 
-        # 预先获取文件大小信息
-        COMPRESSED_SIZE=$(wget --spider --server-response "$SELECTED_URL" 2>&1 | grep -i "content-length" | awk '{print $2}' | head -n1 || echo "0")
-        if [ -n "$COMPRESSED_SIZE" ] && [ "$COMPRESSED_SIZE" -gt 0 ]; then
-            COMPRESSED_MB=$((COMPRESSED_SIZE / 1048576))
-            # 解压后文件通常比压缩文件大3-5倍
-            ESTIMATED_UNCOMPRESSED=$((COMPRESSED_MB * 4))
-            print_info "压缩文件大小: ${COMPRESSED_MB}MB，预估解压后大小: ${ESTIMATED_UNCOMPRESSED}MB"
+                # 预先获取文件大小信息
+                COMPRESSED_SIZE=$(wget --spider --server-response "$SELECTED_URL" 2>&1 | grep -i "content-length" | awk '{print $2}' | head -n1 || echo "0")
+                if [ -n "$COMPRESSED_SIZE" ] && [ "$COMPRESSED_SIZE" -gt 0 ]; then
+                    COMPRESSED_MB=$((COMPRESSED_SIZE / 1048576))
+                    # 解压后文件通常比压缩文件大3-5倍
+                    ESTIMATED_UNCOMPRESSED=$((COMPRESSED_MB * 4))
+                    print_info "压缩文件大小: ${COMPRESSED_MB}MB，预估解压后大小: ${ESTIMATED_UNCOMPRESSED}MB"
 
-            # 如果预估空间不够，尝试清理或者报错
-            if [ "$current_space" -lt $ESTIMATED_UNCOMPRESSED ]; then
-                print_error "预估磁盘空间不足，需要约 ${ESTIMATED_UNCOMPRESSED}MB，可用 ${current_space}MB"
-                print_info "尝试自动清理临时文件..."
-                cleanup_temp_files
-                # 重新检查空间
-                current_space=$(df -m "$DOWNLOAD_DIR" | awk 'NR==2 {print $4}')
-                if [ "$current_space" -lt $ESTIMATED_UNCOMPRESSED ]; then
-                    print_error "清理后空间仍然不足，请手动清理磁盘"
+                    # 如果预估空间不够，尝试清理或者报错
+                    if [ "$current_space" -lt $ESTIMATED_UNCOMPRESSED ]; then
+                        print_error "预估磁盘空间不足，需要约 ${ESTIMATED_UNCOMPRESSED}MB，可用 ${current_space}MB"
+                        print_info "尝试自动清理临时文件..."
+                        cleanup_temp_files
+                        # 重新检查空间
+                        current_space=$(df -m "$DOWNLOAD_DIR" | awk 'NR==2 {print $4}')
+                        if [ "$current_space" -lt $ESTIMATED_UNCOMPRESSED ]; then
+                            print_error "清理后空间仍然不足，请手动清理磁盘"
+                            exit 1
+                        fi
+                        print_success "清理后可用空间: ${current_space}MB"
+                    fi
+                fi
+
+                # 创建临时文件路径，确保目标文件名唯一
+                temp_compressed_file="${DOWNLOAD_DIR}/temp_compressed_$$.gz"
+                temp_output_file="${DOWNLOAD_DIR}/luowrt_temp_$$.img"
+
+                # 先下载压缩文件到临时位置
+                print_info "第一步：下载压缩文件..."
+                if ! wget --progress=bar:force -O "$temp_compressed_file" "$SELECTED_URL"; then
+                    print_error "下载失败"
+                    rm -f "$temp_compressed_file" "$temp_output_file"
                     exit 1
                 fi
-                print_success "清理后可用空间: ${current_space}MB"
+
+                print_info "第二步：验证下载文件..."
+                if [ ! -s "$temp_compressed_file" ]; then
+                    print_error "下载的文件为空"
+                    rm -f "$temp_compressed_file" "$temp_output_file"
+                    exit 1
+                fi
+
+                # 使用智能解压函数
+                print_info "第三步：智能解压文件..."
+                if smart_decompress "$temp_compressed_file" "$temp_output_file" "$FILENAME"; then
+                    # 清理临时压缩文件
+                    rm -f "$temp_compressed_file"
+                else
+                    print_error "智能解压失败"
+                    rm -f "$temp_compressed_file" "$temp_output_file"
+                    exit 1
+                fi
+
+                # 验证解压结果
+                if [ -s "$temp_output_file" ]; then
+                    # 检查是否是有效的磁盘镜像
+                    file_size=$(stat -c%s "$temp_output_file")
+                    if [ "$file_size" -lt 50000000 ]; then  # 小于50MB可能有问题
+                        print_warning "解压后文件较小 ($file_size bytes)，可能不完整"
+                        print_info "文件信息: $(file "$temp_output_file")"
+
+                        # 询问用户是否继续
+                        while true; do
+                            read -p "文件较小，是否继续使用？(y/n): " continue_choice
+                            case $continue_choice in
+                                [Yy]* )
+                                    break
+                                    ;;
+                                [Nn]* )
+                                    print_info "用户取消操作"
+                                    rm -f "$temp_output_file"
+                                    exit 1
+                                    ;;
+                                *)
+                                    print_error "请输入 y 或 n"
+                                    ;;
+                            esac
+                        done
+                    fi
+
+                    mv "$temp_output_file" "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
+                    final_size=$(ls -lh "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE" | awk '{print $5}')
+                    print_success "文件处理完成 (大小: $final_size)"
+                else
+                    print_error "处理后的文件为空或无效"
+                    rm -f "$temp_output_file"
+                    exit 1
+                fi
+                IMAGE_FILE="$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
             fi
-        fi
+            ;;
+        "qcow2"|"vmdk")
+            # qcow2和vmdk格式无需解压
+            if [ -f "$DOWNLOAD_DIR/$FILENAME" ]; then
+                print_warning "文件已存在，跳过下载"
+                IMAGE_FILE="$DOWNLOAD_DIR/$FILENAME"
+            else
+                # 检查磁盘空间
+                ESTIMATED_SIZE=$(wget --spider --server-response "$SELECTED_URL" 2>&1 | grep -i "content-length" | awk '{print $2}' | head -n1 || echo "0")
+                if [ -n "$ESTIMATED_SIZE" ] && [ "$ESTIMATED_SIZE" -gt 0 ]; then
+                    ESTIMATED_MB=$((ESTIMATED_SIZE / 1048576))
+                    if [ "$current_space" -lt $((ESTIMATED_MB + 100)) ]; then  # 预留100MB
+                        print_error "磁盘空间不足，需要约 ${ESTIMATED_MB}MB，可用 ${current_space}MB"
+                        exit 1
+                    fi
+                fi
 
-        # 创建临时文件路径，确保目标文件名唯一
-        temp_compressed_file="${DOWNLOAD_DIR}/temp_compressed_$$.gz"
-        temp_output_file="${DOWNLOAD_DIR}/luowrt_temp_$$.img"
-
-        # 先下载压缩文件到临时位置
-        print_info "第一步：下载压缩文件..."
-        if ! wget --progress=bar:force -O "$temp_compressed_file" "$SELECTED_URL"; then
-            print_error "下载失败"
-            rm -f "$temp_compressed_file" "$temp_output_file"
-            exit 1
-        fi
-
-        print_info "第二步：验证下载文件..."
-        if [ ! -s "$temp_compressed_file" ]; then
-            print_error "下载的文件为空"
-            rm -f "$temp_compressed_file" "$temp_output_file"
-            exit 1
-        fi
-
-        # 使用智能解压函数
-        print_info "第三步：智能解压文件..."
-        if smart_decompress "$temp_compressed_file" "$temp_output_file" "$FILENAME"; then
-            # 清理临时压缩文件
-            rm -f "$temp_compressed_file"
-        else
-            print_error "智能解压失败"
-            rm -f "$temp_compressed_file" "$temp_output_file"
-            exit 1
-        fi
-
-        # 验证解压结果
-        if [ -s "$temp_output_file" ]; then
-            # 检查是否是有效的磁盘镜像
-            file_size=$(stat -c%s "$temp_output_file")
-            if [ "$file_size" -lt 50000000 ]; then  # 小于50MB可能有问题
-                print_warning "解压后文件较小 ($file_size bytes)，可能不完整"
-                print_info "文件信息: $(file "$temp_output_file")"
-
-                # 询问用户是否继续
-                while true; do
-                    read -p "文件较小，是否继续使用？(y/n): " continue_choice
-                    case $continue_choice in
-                        [Yy]* )
-                            break
-                            ;;
-                        [Nn]* )
-                            print_info "用户取消操作"
-                            rm -f "$temp_output_file"
-                            exit 1
-                            ;;
-                        *)
-                            print_error "请输入 y 或 n"
-                            ;;
-                    esac
-                done
+                print_info "开始下载..."
+                if ! wget --progress=bar:force -O "$DOWNLOAD_DIR/$FILENAME" "$SELECTED_URL"; then
+                    print_error "下载失败"
+                    exit 1
+                fi
+                print_success "下载完成"
+                IMAGE_FILE="$DOWNLOAD_DIR/$FILENAME"
             fi
-
-            mv "$temp_output_file" "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
-            final_size=$(ls -lh "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE" | awk '{print $5}')
-            print_success "文件处理完成 (大小: $final_size)"
-        else
-            print_error "处理后的文件为空或无效"
-            rm -f "$temp_output_file"
-            exit 1
-        fi
-        IMAGE_FILE="$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
-    fi
+            ;;
+    esac
 
     # 验证最终文件
     if [ ! -f "$IMAGE_FILE" ] || [ ! -s "$IMAGE_FILE" ]; then
@@ -520,13 +595,6 @@ get_storage_pools() {
         exit 1
     fi
 
-    print_info "获取到的存储信息:"
-    echo "$STORAGE_INFO" | while IFS= read -r line; do
-        if [ -n "$line" ]; then
-            print_info "  $line"
-        fi
-    done
-
     # 解析存储池信息
     STORAGE_LIST=()
     STORAGE_MAP=()
@@ -539,8 +607,6 @@ get_storage_pools() {
             STORAGE_USED=$(echo "$line" | awk '{print $4}')
             STORAGE_AVAIL=$(echo "$line" | awk '{print $5}')
 
-            print_info "处理存储池: $STORAGE_NAME (类型: $STORAGE_TYPE)"
-
             STORAGE_LIST+=("$STORAGE_NAME")
             STORAGE_MAP["$STORAGE_NAME"]="$STORAGE_TYPE|$STORAGE_SIZE|$STORAGE_USED|$STORAGE_AVAIL"
         fi
@@ -548,7 +614,6 @@ get_storage_pools() {
 
     print_success "找到 ${#STORAGE_LIST[@]} 个可用存储池"
 }
-
 
 # 选择存储池
 select_storage_pool() {
@@ -722,51 +787,6 @@ check_efi_firmware() {
     return 0
 }
 
-# 检查文件格式兼容性（直接使用PVE，不干预格式检查）
-check_format_compatibility() {
-    print_info "准备导入磁盘镜像..."
-    print_info "文件: $IMAGE_FILE"
-    print_info "存储池: $VM_STORAGE"
-    print_info "让PVE处理格式兼容性，不进行预检查"
-    return 0
-}
-
-# 导入磁盘并处理"未使用"状态（最简单的原始方法）
-import_and_attach_disk() {
-    print_info "正在导入磁盘镜像..."
-
-    # 最简单的方法：使用 qm importdisk，然后直接附加
-    print_info "执行导入命令: qm importdisk $NEXT_ID $IMAGE_FILE $VM_STORAGE"
-
-    # 直接导入，不做任何复杂处理
-    if qm importdisk "$NEXT_ID" "$IMAGE_FILE" "$VM_STORAGE"; then
-        print_success "磁盘镜像导入成功"
-
-        # 直接假设导入后的磁盘ID和路径
-        DISK_PATH="$VM_STORAGE:vm-$NEXT_ID-disk-0"
-        print_info "附加磁盘: $DISK_PATH"
-
-        # 直接附加到虚拟机
-        if qm set "$NEXT_ID" --scsi0 "$DISK_PATH"; then
-            print_success "磁盘附加成功"
-        else
-            print_warning "磁盘附加可能失败，请手动检查"
-        fi
-
-        # 设置启动选项
-        qm set "$NEXT_ID" --boot c --bootdisk scsi0
-
-        return 0
-    else
-        print_error "磁盘镜像导入失败"
-        print_info "请尝试手动导入："
-        print_info "1. qm importdisk $NEXT_ID $IMAGE_FILE $VM_STORAGE"
-        print_info "2. qm set $NEXT_ID --scsi0 $VM_STORAGE:vm-$NEXT_ID-disk-0"
-        print_info "3. qm set $NEXT_ID --boot c --bootdisk scsi0"
-        return 1
-    fi
-}
-
 # 创建虚拟机
 create_vm() {
     print_info "正在创建虚拟机..."
@@ -776,12 +796,6 @@ create_vm() {
     # 检查EFI固件
     if ! check_efi_firmware; then
         print_warning "使用BIOS启动模式"
-    fi
-
-    # 检查文件格式兼容性
-    if ! check_format_compatibility; then
-        print_error "文件格式兼容性检查失败"
-        exit 1
     fi
 
     # 基本虚拟机创建参数
@@ -804,17 +818,21 @@ create_vm() {
     # 创建虚拟机
     eval "$VM_CREATE_CMD"
 
-    # 导入并附加磁盘
-    if ! import_and_attach_disk; then
-        print_error "磁盘导入失败，无法继续创建虚拟机"
-        exit 1
-    fi
+    # 导入磁盘镜像
+    print_info "正在导入磁盘镜像..."
+    qm importdisk "$NEXT_ID" "$IMAGE_FILE" "$VM_STORAGE"
 
-    # 如果是EFI模式，还需要配置EFI磁盘
+    # 配置磁盘
     if [ "$BOOT_MODE" = "efi" ]; then
-        # 确保EFI磁盘被正确配置
         qm set "$NEXT_ID" \
+            --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
             --efidisk0 "$VM_STORAGE:vm-$NEXT_ID-efidisk-0" \
+            --boot c \
+            --agent enabled=1
+    else
+        qm set "$NEXT_ID" \
+            --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
+            --ide2 "$VM_STORAGE:cloudinit" \
             --boot c \
             --agent enabled=1
     fi
@@ -835,7 +853,6 @@ create_vm() {
     print_info "CPU: $cpu_cores cores"
     print_info "Memory: ${memory_size}MB"
     print_info "Storage: $VM_STORAGE"
-    print_info "File Format: img.gz (raw)"
     print_info "Boot Mode: $BOOT_MODE"
     if [ "$BOOT_MODE" = "efi" ]; then
         print_info "EFI Firmware: $BOOT_FIRMWARE"
@@ -870,14 +887,11 @@ main() {
     get_next_vm_id
     configure_vm
 
-    # 获取存储池信息
-    IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL <<< "${STORAGE_MAP[$VM_STORAGE]}"
-
     # 确认创建
     echo -e "\n${BLUE}配置确认:${NC}"
     echo "VM ID: $NEXT_ID"
     echo "ROM版本: ${ROM_SIZE}MB"
-    echo "文件格式: img.gz (将解压为 raw 格式)"
+    echo "文件格式: $FILE_FORMAT"
     echo "启动方式: $BOOT_MODE"
     echo "存储池: $VM_STORAGE"
     echo "CPU: $cpu_cores cores"
