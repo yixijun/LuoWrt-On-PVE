@@ -23,27 +23,44 @@ mkdir -p "$DOWNLOAD_DIR"
 
 # 检查临时目录空间
 check_disk_space() {
-    # 获取下载目录所在分区的可用空间（MB）
-    AVAILABLE_SPACE=$(df -m "$DOWNLOAD_DIR" | awk 'NR==2 {print $4}')
-    if [ "$AVAILABLE_SPACE" -lt 2048 ]; then  # 少于2GB空间
-        print_warning "临时目录空间不足 ($AVAILABLE_SPACE MB)"
-        print_info "尝试使用 /tmp 目录..."
+    print_info "检查磁盘空间..."
 
-        # 如果当前目录空间不足，尝试使用 /tmp
-        if [ "$DOWNLOAD_DIR" != "/tmp/openwrt" ]; then
-            DOWNLOAD_DIR="/tmp/openwrt"
-            mkdir -p "$DOWNLOAD_DIR"
-            AVAILABLE_SPACE=$(df -m "$DOWNLOAD_DIR" | awk 'NR==2 {print $4}')
-            if [ "$AVAILABLE_SPACE" -lt 2048 ]; then
-                print_error "临时目录空间仍然不足 ($AVAILABLE_SPACE MB)，请清理磁盘空间"
-                exit 1
-            fi
-            print_success "使用 /tmp/openwrt 作为下载目录，可用空间: $AVAILABLE_SPACE MB"
-        else
-            print_error "临时目录空间不足 ($AVAILABLE_SPACE MB)，请清理磁盘空间后重试"
-            exit 1
+    # 定义多个备选临时目录（按优先级排序）
+    TEMP_DIRS=("/tmp/openwrt" "/var/tmp/openwrt" "/root/tmp/openwrt" "/opt/tmp/openwrt")
+
+    # 为每个目录检查可用空间
+    for temp_dir in "${TEMP_DIRS[@]}"; do
+        # 检查目录是否存在或是否可以创建
+        parent_dir=$(dirname "$temp_dir")
+        if [ ! -d "$parent_dir" ] || [ ! -w "$parent_dir" ]; then
+            continue
         fi
-    fi
+
+        # 创建目录（如果不存在）
+        mkdir -p "$temp_dir" 2>/dev/null || continue
+
+        # 检查可用空间
+        available_space=$(df -m "$temp_dir" | awk 'NR==2 {print $4}' 2>/dev/null || echo "0")
+
+        # 要求至少3GB可用空间（解压后文件通常较大）
+        if [ "$available_space" -ge 3072 ]; then
+            DOWNLOAD_DIR="$temp_dir"
+            print_success "使用临时目录: $DOWNLOAD_DIR (可用空间: ${available_space}MB)"
+            return 0
+        else
+            print_warning "$temp_dir 空间不足 (${available_space}MB)"
+            # 清理该目录并删除
+            rm -rf "$temp_dir" 2>/dev/null
+        fi
+    done
+
+    print_error "无法找到足够的临时目录空间！请至少清理出3GB空间后再试。"
+    print_info "建议操作："
+    print_info "1. 清理 /tmp 目录: rm -rf /tmp/*"
+    print_info "2. 清理旧文件: find /tmp -type f -atime +7 -delete"
+    print_info "3. 检查磁盘使用: df -h"
+    print_info "4. 手动指定临时目录，修改脚本中的 DOWNLOAD_DIR 变量"
+    exit 1
 }
 
 # 打印带颜色的消息
@@ -176,38 +193,128 @@ download_rom() {
     FILENAME=$(basename "$SELECTED_URL")
     print_info "准备下载: $FILENAME"
 
-    # 下载文件
-    if [ -f "$DOWNLOAD_DIR/$FILENAME" ]; then
-        print_warning "文件已存在，跳过下载"
-    else
-        print_info "开始下载..."
-        if ! wget -O "$DOWNLOAD_DIR/$FILENAME" "$SELECTED_URL"; then
-            print_error "下载失败"
-            exit 1
-        fi
-        print_success "下载完成"
+    # 重新检查磁盘空间（可能在等待期间发生变化）
+    current_space=$(df -m "$DOWNLOAD_DIR" | awk 'NR==2 {print $4}')
+    if [ "$current_space" -lt 1024 ]; then  # 至少保留1GB空间
+        print_error "临时目录空间不足 (${current_space}MB)，请清理磁盘空间"
+        exit 1
     fi
 
     # 根据文件格式处理
     case "$FILE_FORMAT" in
         "img.gz")
             UNCOMPRESSED_FILE="${FILENAME%.gz}"
+
+            # 检查解压后文件是否已存在
             if [ -f "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE" ]; then
-                print_warning "解压文件已存在，跳过解压"
+                print_warning "解压文件已存在，跳过下载和解压"
+                IMAGE_FILE="$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
             else
-                print_info "正在解压文件..."
-                gunzip -c "$DOWNLOAD_DIR/$FILENAME" > "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
-                print_success "解压完成"
+                # 对于img.gz格式，使用更安全的流式解压方法
+                print_info "正在下载并解压文件（流式处理，节省空间）..."
+                print_info "临时目录: $DOWNLOAD_DIR，可用空间: ${current_space}MB"
+
+                # 预先获取文件大小信息
+                COMPRESSED_SIZE=$(wget --spider --server-response "$SELECTED_URL" 2>&1 | grep -i "content-length" | awk '{print $2}' | head -n1 || echo "0")
+                if [ -n "$COMPRESSED_SIZE" ] && [ "$COMPRESSED_SIZE" -gt 0 ]; then
+                    COMPRESSED_MB=$((COMPRESSED_SIZE / 1048576))
+                    # 解压后文件通常比压缩文件大3-5倍
+                    ESTIMATED_UNCOMPRESSED=$((COMPRESSED_MB * 4))
+                    print_info "压缩文件大小: ${COMPRESSED_MB}MB，预估解压后大小: ${ESTIMATED_UNCOMPRESSED}MB"
+
+                    # 如果预估空间不够，尝试清理或者报错
+                    if [ "$current_space" -lt $ESTIMATED_UNCOMPRESSED ]; then
+                        print_error "预估磁盘空间不足，需要约 ${ESTIMATED_UNCOMPRESSED}MB，可用 ${current_space}MB"
+                        print_info "尝试自动清理临时文件..."
+                        cleanup_temp_files
+                        # 重新检查空间
+                        current_space=$(df -m "$DOWNLOAD_DIR" | awk 'NR==2 {print $4}')
+                        if [ "$current_space" -lt $ESTIMATED_UNCOMPRESSED ]; then
+                            print_error "清理后空间仍然不足，请手动清理磁盘"
+                            exit 1
+                        fi
+                        print_success "清理后可用空间: ${current_space}MB"
+                    fi
+                fi
+
+                # 创建临时文件路径，确保目标文件名唯一
+                temp_output_file="${DOWNLOAD_DIR}/openwrt_temp_$$.img"
+
+                # 使用更可靠的流式解压方法
+                print_info "开始下载并解压到临时文件..."
+                if wget --progress=bar:force -O - "$SELECTED_URL" 2>/dev/null | gunzip -c > "$temp_output_file"; then
+                    # 检解压是否成功且文件不为空
+                    if [ -s "$temp_output_file" ]; then
+                        mv "$temp_output_file" "$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
+                        print_success "下载并解压完成"
+                    else
+                        print_error "解压后的文件为空"
+                        rm -f "$temp_output_file"
+                        exit 1
+                    fi
+                else
+                    print_error "下载或解压失败"
+                    # 清理临时文件
+                    rm -f "$temp_output_file"
+                    exit 1
+                fi
+                IMAGE_FILE="$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
             fi
-            IMAGE_FILE="$DOWNLOAD_DIR/$UNCOMPRESSED_FILE"
             ;;
         "qcow2"|"vmdk")
             # qcow2和vmdk格式无需解压
-            IMAGE_FILE="$DOWNLOAD_DIR/$FILENAME"
+            if [ -f "$DOWNLOAD_DIR/$FILENAME" ]; then
+                print_warning "文件已存在，跳过下载"
+                IMAGE_FILE="$DOWNLOAD_DIR/$FILENAME"
+            else
+                # 检查磁盘空间
+                ESTIMATED_SIZE=$(wget --spider --server-response "$SELECTED_URL" 2>&1 | grep -i "content-length" | awk '{print $2}' | head -n1 || echo "0")
+                if [ -n "$ESTIMATED_SIZE" ] && [ "$ESTIMATED_SIZE" -gt 0 ]; then
+                    ESTIMATED_MB=$((ESTIMATED_SIZE / 1048576))
+                    if [ "$current_space" -lt $((ESTIMATED_MB + 100)) ]; then  # 预留100MB
+                        print_error "磁盘空间不足，需要约 ${ESTIMATED_MB}MB，可用 ${current_space}MB"
+                        exit 1
+                    fi
+                fi
+
+                print_info "开始下载..."
+                if ! wget --progress=bar:force -O "$DOWNLOAD_DIR/$FILENAME" "$SELECTED_URL"; then
+                    print_error "下载失败"
+                    exit 1
+                fi
+                print_success "下载完成"
+                IMAGE_FILE="$DOWNLOAD_DIR/$FILENAME"
+            fi
             ;;
     esac
 
-    print_success "文件准备完成: $IMAGE_FILE"
+    # 验证最终文件
+    if [ ! -f "$IMAGE_FILE" ] || [ ! -s "$IMAGE_FILE" ]; then
+        print_error "最终文件不存在或为空: $IMAGE_FILE"
+        exit 1
+    fi
+
+    file_size=$(ls -lh "$IMAGE_FILE" | awk '{print $5}')
+    print_success "文件准备完成: $IMAGE_FILE (大小: $file_size)"
+}
+
+# 清理临时文件的辅助函数
+cleanup_temp_files() {
+    print_info "清理临时文件..."
+
+    # 清理系统临时目录中的旧文件
+    if [ -d "/tmp" ]; then
+        # 删除超过1天的临时文件
+        find /tmp -type f -atime +1 -delete 2>/dev/null || true
+        # 删除空目录
+        find /tmp -type d -empty -delete 2>/dev/null || true
+    fi
+
+    # 清理当前用户的临时文件
+    find /tmp -user "$(whoami)" -name "*.tmp" -delete 2>/dev/null || true
+    find /tmp -user "$(whoami)" -name "openwrt_*" -delete 2>/dev/null || true
+
+    print_info "清理完成"
 }
 
 # 获取可用的PVE存储池列表
@@ -405,7 +512,11 @@ main() {
 
     check_pve_environment
 
+    # 检查磁盘空间
+    check_disk_space
+
     print_info "使用GitHub仓库: $GITHUB_REPO"
+    print_info "下载目录: $DOWNLOAD_DIR"
 
     get_latest_release
     select_rom_version
