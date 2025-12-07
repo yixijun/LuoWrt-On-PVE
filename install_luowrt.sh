@@ -207,6 +207,7 @@ select_rom_version() {
         "efi")
             case "$FILE_FORMAT" in
                 "img.gz")
+                    # EFI模式：优先搜索包含 -efi 的文件，如果没有则搜索包含 uefi 的文件
                     FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.img\.gz"
                     ;;
                 "qcow2")
@@ -216,11 +217,12 @@ select_rom_version() {
                     FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.vmdk$"
                     ;;
             esac
-            print_info "EFI模式：将搜索带有 '-efi' 标识的文件"
+            print_info "EFI模式：优先搜索带有 '-efi' 标识的文件"
             ;;
         "bios")
             case "$FILE_FORMAT" in
                 "img.gz")
+                    # BIOS模式：明确排除EFI和UEFI版本，只搜索标准版本
                     FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.img\.gz"
                     ;;
                 "qcow2")
@@ -230,7 +232,7 @@ select_rom_version() {
                     FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.vmdk$"
                     ;;
             esac
-            print_info "BIOS模式：将搜索标准版本文件"
+            print_info "BIOS模式：将搜索标准版本文件（排除EFI和UEFI版本）"
             ;;
     esac
 }
@@ -238,9 +240,53 @@ select_rom_version() {
 # 下载选中的ROM
 download_rom() {
     print_info "正在搜索$ROM_SIZE MB $FILE_FORMAT 格式的下载链接..."
+    print_info "启动模式: $BOOT_MODE"
+
+    # 调试：显示所有可用的下载链接
+    print_info "所有可用文件列表："
+    echo "$DOWNLOAD_URLS" | while read -r url; do
+        if [ -n "$url" ]; then
+            filename=$(basename "$url")
+            echo "  - $filename"
+        fi
+    done
 
     # 从下载链接中找到匹配的文件
-    SELECTED_URL=$(echo "$DOWNLOAD_URLS" | grep -E "$FILE_PATTERN" | head -n1)
+    if [ "$BOOT_MODE" = "bios" ]; then
+        # BIOS模式：排除所有EFI和UEFI版本的文件
+        print_info "BIOS模式：筛选标准版本文件（排除EFI/UEFI版本）..."
+        BIOS_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E "$FILE_PATTERN" | grep -v -i "efi\|uefi")
+
+        if [ -n "$BIOS_CANDIDATES" ]; then
+            SELECTED_URL=$(echo "$BIOS_CANDIDATES" | head -n1)
+            print_success "找到BIOS兼容版本文件"
+        else
+            # 如果没有找到非EFI版本，尝试使用通用匹配但不包含EFI标识
+            print_warning "未找到标准BIOS版本，尝试其他兼容文件..."
+            SELECTED_URL=$(echo "$DOWNLOAD_URLS" | grep -E ".*LuoWrt-${ROM_SIZE}.*\.img\.gz" | grep -v -i "efi\|uefi" | head -n1)
+            if [ -n "$SELECTED_URL" ]; then
+                print_success "找到兼容的BIOS版本文件"
+            fi
+        fi
+    else
+        # EFI模式：优先搜索EFI版本的文件
+        print_info "EFI模式：搜索EFI版本文件..."
+
+        # 首先尝试精确匹配EFI版本
+        EFI_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E "$FILE_PATTERN")
+        if [ -n "$EFI_CANDIDATES" ]; then
+            SELECTED_URL=$(echo "$EFI_CANDIDATES" | head -n1)
+            print_success "找到EFI版本文件"
+        else
+            # 如果没有找到EFI版本，尝试搜索包含uefi的文件
+            print_warning "未找到标准EFI版本，尝试搜索UEFI版本文件..."
+            UEFI_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E ".*LuoWrt-${ROM_SIZE}.*uefi.*\.img\.gz")
+            if [ -n "$UEFI_CANDIDATES" ]; then
+                SELECTED_URL=$(echo "$UEFI_CANDIDATES" | head -n1)
+                print_success "找到UEFI版本文件"
+            fi
+        fi
+    fi
 
     if [ -z "$SELECTED_URL" ]; then
         print_error "未找到$ROM_SIZE MB $FILE_FORMAT 格式的下载链接"
