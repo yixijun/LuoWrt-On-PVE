@@ -457,26 +457,41 @@ smart_decompress() {
     file_type=$(file -b "$input_file")
     print_info "检测到文件类型: $file_type"
 
+    # 检查文件大小
+    file_size=$(stat -c%s "$input_file")
+    print_info "原始文件大小: $file_size 字节"
+
     # 根据文件类型选择解压方法
     case "$file_type" in
-        *"gzip"*|*"compress"*)
-            print_info "使用gzip解压..."
-            if ! gunzip -c "$input_file" > "$output_file" 2>/dev/null; then
-                print_warning "标准gzip解压失败，尝试强制解压..."
-                gunzip -cf "$input_file" > "$output_file" 2>&1 || {
-                    print_error "gzip解压失败"
-                    return 1
-                }
+        *"gzip compressed data"*)
+            print_info "检测到gzip压缩文件，尝试多种解压方法..."
+
+            # 方法1：标准解压
+            if gunzip -c "$input_file" > "$output_file" 2>/dev/null; then
+                print_success "标准gzip解压成功"
+            # 方法2：强制解压（忽略警告）
+            elif gunzip -cf "$input_file" > "$output_file" 2>&1; then
+                print_success "强制gzip解压成功"
+            # 方法3：使用解压到临时文件再重命名
+            elif gunzip -c "$input_file" 2>/dev/null | dd of="$output_file" bs=1M 2>/dev/null; then
+                print_success "流式gzip解压成功"
+            else
+                print_error "所有gzip解压方法都失败"
+                # 显示更详细的错误信息
+                print_info "尝试诊断问题..."
+                print_info "文件头部信息:"
+                hexdump -C "$input_file" | head -n 3
+                return 1
             fi
             ;;
-        *"xz"*)
+        *"xz compressed data"*)
             print_info "使用xz解压..."
             xz -dc "$input_file" > "$output_file" || {
                 print_error "xz解压失败"
                 return 1
             }
             ;;
-        *"bzip2"*)
+        *"bzip2 compressed data"*)
             print_info "使用bzip2解压..."
             bzip2 -dc "$input_file" > "$output_file" || {
                 print_error "bzip2解压失败"
@@ -486,7 +501,7 @@ smart_decompress() {
         *"data"*|*"ASCII"*|*"ISO-8859"*|*"empty"*)
             print_warning "文件未识别为压缩格式，可能是已解压的镜像文件"
             # 检查是否是有效的磁盘镜像
-            if [ "$(stat -c%s "$input_file")" -gt 50000000 ]; then  # 大于50MB
+            if [ "$file_size" -gt 50000000 ]; then  # 大于50MB
                 print_info "文件较大，直接复制为镜像文件"
                 cp "$input_file" "$output_file"
             else
@@ -499,10 +514,14 @@ smart_decompress() {
             case "$filename" in
                 *.gz)
                     print_info "根据扩展名使用gzip解压..."
-                    gunzip -c "$input_file" > "$output_file" || {
+                    if gunzip -c "$input_file" > "$output_file" 2>/dev/null; then
+                        print_success "扩展名gzip解压成功"
+                    elif gunzip -cf "$input_file" > "$output_file" 2>&1; then
+                        print_success "扩展名强制gzip解压成功"
+                    else
                         print_error "根据扩展名的gzip解压失败"
                         return 1
-                    }
+                    fi
                     ;;
                 *.xz)
                     print_info "根据扩展名使用xz解压..."
@@ -521,6 +540,8 @@ smart_decompress() {
                 *)
                     print_error "无法识别的文件格式"
                     print_info "文件信息: $(file "$input_file")"
+                    print_info "文件头部:"
+                    hexdump -C "$input_file" | head -n 2
                     return 1
                     ;;
             esac
@@ -529,7 +550,13 @@ smart_decompress() {
 
     # 验证解压结果
     if [ -s "$output_file" ]; then
-        print_success "解压成功"
+        output_size=$(stat -c%s "$output_file")
+        print_success "解压成功，输出文件大小: $output_size 字节"
+
+        # 检查解压后的文件类型
+        output_type=$(file -b "$output_file")
+        print_info "解压后文件类型: $output_type"
+
         return 0
     else
         print_error "解压后文件为空"

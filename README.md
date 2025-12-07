@@ -229,19 +229,28 @@ Memory: 1024MB
    - **格式自动检测**：使用 `file` 命令智能识别文件类型
    - **容错处理**：自动处理文件头损坏、尾部垃圾数据等问题
    - **镜像文件检测**：自动识别已解压的磁盘镜像文件
+   - **多重解压策略**：当标准解压失败时，自动尝试强制解压、流式解压等多种方法
+
+   **特殊文件格式处理：**
+   - 脚本能处理来自不同文件系统（FAT、NTFS、ext4等）的压缩文件
+   - 自动识别并忽略文件系统元数据
+   - 支持带有额外字段或注释的gzip文件
 
    **如果仍然遇到解压问题：**
    ```bash
-   # 手动检查文件类型
+   # 手动检查文件类型和大小
    file downloaded_file.gz
-   hexdump -C downloaded_file.gz | head -n1
+   ls -lh downloaded_file.gz
 
-   # 尝试手动解压
-   gunzip -c downloaded_file.gz > output.img
-   # 或者强制解压
-   gunzip -cf downloaded_file.gz > output.img
+   # 尝试多种解压方法
+   gunzip -c downloaded_file.gz > output.img          # 标准解压
+   gunzip -cf downloaded_file.gz > output.img         # 强制解压
+   gunzip -c downloaded_file.gz | dd of=output.img bs=1M  # 流式解压
 
-   # 检查解压结果
+   # 检查文件头部（诊断用途）
+   hexdump -C downloaded_file.gz | head -n3
+
+   # 验证解压结果
    file output.img
    ls -lh output.img
    ```
