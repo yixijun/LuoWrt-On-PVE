@@ -24,7 +24,7 @@
 
 1. 将脚本下载到您的 PVE 主机：
 ```bash
-wget https://your-repo-url/install_openwrt.sh
+wget https://raw.githubusercontent.com/yixijun/LuoWrt-On-PVE/main/install_openwrt.sh
 ```
 
 2. 添加执行权限：
