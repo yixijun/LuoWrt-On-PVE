@@ -541,28 +541,14 @@ get_storage_pools() {
 
             print_info "处理存储池: $STORAGE_NAME (类型: $STORAGE_TYPE)"
 
-            # 获取存储池支持的格式
-            SUPPORTED_FORMATS=$(get_storage_formats "$STORAGE_NAME")
-
             STORAGE_LIST+=("$STORAGE_NAME")
-            STORAGE_MAP["$STORAGE_NAME"]="$STORAGE_TYPE|$STORAGE_SIZE|$STORAGE_USED|$STORAGE_AVAIL|$SUPPORTED_FORMATS"
+            STORAGE_MAP["$STORAGE_NAME"]="$STORAGE_TYPE|$STORAGE_SIZE|$STORAGE_USED|$STORAGE_AVAIL"
         fi
     done <<< "$STORAGE_INFO"
 
     print_success "找到 ${#STORAGE_LIST[@]} 个可用存储池"
 }
 
-# 获取存储池支持的格式（简化版，PVE原生支持qcow2和raw）
-get_storage_formats() {
-    local storage_name="$1"
-
-    print_info "检测存储池 $storage_name..."
-
-    # PVE 原生支持 qcow2 和 raw 格式，大多数存储类型都支持
-    # 简化处理，返回常用格式
-    echo "qcow2,raw"
-    print_info "PVE 原生支持格式: qcow2, raw"
-}
 
 # 选择存储池
 select_storage_pool() {
@@ -570,10 +556,10 @@ select_storage_pool() {
 
     for i in "${!STORAGE_LIST[@]}"; do
         STORAGE_NAME="${STORAGE_LIST[$i]}"
-        IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL SUPPORTED_FORMATS <<< "${STORAGE_MAP[$STORAGE_NAME]}"
+        IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL <<< "${STORAGE_MAP[$STORAGE_NAME]}"
 
-        printf "%d) %s (类型: %s, 支持格式: %s, 大小: %s, 已用: %s, 可用: %s)\n" \
-            $((i+1)) "$STORAGE_NAME" "$STORAGE_TYPE" "$SUPPORTED_FORMATS" "$STORAGE_SIZE" "$STORAGE_USED" "$STORAGE_AVAIL"
+        printf "%d) %s (类型: %s, 大小: %s, 已用: %s, 可用: %s)\n" \
+            $((i+1)) "$STORAGE_NAME" "$STORAGE_TYPE" "$STORAGE_SIZE" "$STORAGE_USED" "$STORAGE_AVAIL"
     done
 
     while true; do
@@ -581,10 +567,10 @@ select_storage_pool() {
 
         if [[ "$storage_choice" =~ ^[0-9]+$ ]] && [ "$storage_choice" -ge 1 ] && [ "$storage_choice" -le ${#STORAGE_LIST[@]} ]; then
             VM_STORAGE="${STORAGE_LIST[$((storage_choice-1))]}"
-            IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL SUPPORTED_FORMATS <<< "${STORAGE_MAP[$VM_STORAGE]}"
+            IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL <<< "${STORAGE_MAP[$VM_STORAGE]}"
 
             print_success "已选择存储池: $VM_STORAGE"
-            print_info "存储池信息: 类型=$STORAGE_TYPE, 支持格式=$SUPPORTED_FORMATS, 总大小=$STORAGE_SIZE, 可用空间=$STORAGE_AVAIL"
+            print_info "存储池信息: 类型=$STORAGE_TYPE, 总大小=$STORAGE_SIZE, 可用空间=$STORAGE_AVAIL"
             break
         else
             print_error "无效选择，请输入1到${#STORAGE_LIST[@]}之间的数字"
@@ -736,43 +722,47 @@ check_efi_firmware() {
     return 0
 }
 
-# 检查文件格式兼容性（只支持img.gz格式）
+# 检查文件格式兼容性（直接使用PVE，不干预格式检查）
 check_format_compatibility() {
-    print_info "检查文件格式兼容性..."
-    print_info "当前文件格式: $FILE_FORMAT (img.gz)"
+    print_info "准备导入磁盘镜像..."
+    print_info "文件: $IMAGE_FILE"
     print_info "存储池: $VM_STORAGE"
-
-    # img.gz 格式将解压为 raw 格式，这是最可靠的格式
-    print_success "img.gz 格式将解压为 raw 格式，兼容性最好"
+    print_info "让PVE处理格式兼容性，不进行预检查"
     return 0
 }
 
-# 导入磁盘并处理"未使用"状态
+# 导入磁盘并处理"未使用"状态（最简单的原始方法）
 import_and_attach_disk() {
     print_info "正在导入磁盘镜像..."
 
-    # 使用qm importdisk导入磁盘
+    # 最简单的方法：使用 qm importdisk，然后直接附加
+    print_info "执行导入命令: qm importdisk $NEXT_ID $IMAGE_FILE $VM_STORAGE"
+
+    # 直接导入，不做任何复杂处理
     if qm importdisk "$NEXT_ID" "$IMAGE_FILE" "$VM_STORAGE"; then
         print_success "磁盘镜像导入成功"
 
-        # 获取导入后的磁盘ID（通常是vm-$NEXT_ID-disk-0）
-        DISK_ID="vm-$NEXT_ID-disk-0"
-        DISK_PATH="$VM_STORAGE:$DISK_ID"
+        # 直接假设导入后的磁盘ID和路径
+        DISK_PATH="$VM_STORAGE:vm-$NEXT_ID-disk-0"
+        print_info "附加磁盘: $DISK_PATH"
 
-        print_info "检测到导入的磁盘: $DISK_PATH"
+        # 直接附加到虚拟机
+        if qm set "$NEXT_ID" --scsi0 "$DISK_PATH"; then
+            print_success "磁盘附加成功"
+        else
+            print_warning "磁盘附加可能失败，请手动检查"
+        fi
 
-        # 附加磁盘到虚拟机
-        print_info "正在附加磁盘到虚拟机..."
-        qm set "$NEXT_ID" \
-            --scsi0 "$DISK_PATH" \
-            --boot c \
-            --agent enabled=1
-
-        print_success "磁盘附加完成"
+        # 设置启动选项
+        qm set "$NEXT_ID" --boot c --bootdisk scsi0
 
         return 0
     else
         print_error "磁盘镜像导入失败"
+        print_info "请尝试手动导入："
+        print_info "1. qm importdisk $NEXT_ID $IMAGE_FILE $VM_STORAGE"
+        print_info "2. qm set $NEXT_ID --scsi0 $VM_STORAGE:vm-$NEXT_ID-disk-0"
+        print_info "3. qm set $NEXT_ID --boot c --bootdisk scsi0"
         return 1
     fi
 }
@@ -880,8 +870,8 @@ main() {
     get_next_vm_id
     configure_vm
 
-    # 获取存储池支持的格式信息
-    IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL SUPPORTED_FORMATS <<< "${STORAGE_MAP[$VM_STORAGE]}"
+    # 获取存储池信息
+    IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL <<< "${STORAGE_MAP[$VM_STORAGE]}"
 
     # 确认创建
     echo -e "\n${BLUE}配置确认:${NC}"
