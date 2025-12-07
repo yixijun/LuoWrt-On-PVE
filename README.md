@@ -6,11 +6,11 @@
 
 - 🔄 自动从 GitHub 下载最新的 LuoWrt release
 - 💾 支持 512MB 和 3072MB ROM 版本选择
-- 💿 支持多种固件格式：img.gz、qcow2、vmdk
+- 💿 支持固件格式：img.gz、qcow2（PVE原生支持）
 - 🔄 支持 BIOS 和 EFI (UEFI) 启动模式选择
 - 🔧 自动检测和安装 EFI 固件
-- 💾 智能存储格式兼容性检查和自动转换
-- 📊 支持多种存储类型：LVM Thin、LVM、ZFS、NFS、目录存储等
+- 💾 PVE原生格式支持（qcow2、raw），无需格式转换
+- 📊 支持所有PVE存储类型：LVM Thin、LVM、ZFS、NFS、目录存储等
 - 🖥️ 自动获取下一个可用的 VM ID
 - 💽 自动检测并选择 PVE 存储池
 - ⚙️ 可配置 CPU 核心数和内存大小
@@ -69,8 +69,7 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 
 **支持的格式：**
 - img.gz：推荐格式，兼容性最好（需要解压）
-- qcow2：QCOW2格式（直接使用）
-- vmdk：VMware格式（直接使用）
+- qcow2：QCOW2格式，PVE原生支持（直接导入，无需转换）
 
 **启动模式：**
 - BIOS：传统启动模式，兼容性最好，适用于大多数情况
@@ -79,7 +78,7 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 **文件名示例：**
 - `LuoWrt-512-x86-64-generic-squashfs-combined.img.gz` (BIOS版本)
 - `LuoWrt-3072-x86-64-generic-squashfs-combined.qcow2` (BIOS版本)
-- `LuoWrt-3072-x86-64-generic-squashfs-combined-efi.vmdk` (EFI版本)
+- `LuoWrt-3072-x86-64-generic-squashfs-combined-efi.qcow2` (EFI版本)
 - `LuoWrt-512-x86-64-uefi-gpt-squashfs-combined.img.gz` (EFI版本)
 
 **注意：EFI模式会自动搜索带有 "-efi"、"uefi" 等标识的文件。**
@@ -118,9 +117,8 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 
 选择文件格式:
 1) img.gz (推荐，兼容性最好)
-2) qcow2 (QCOW2格式)
-3) vmdk (VMware格式)
-请选择文件格式 (1-3): 1
+2) qcow2 (QCOW2格式，PVE原生支持)
+请选择文件格式 (1-2): 1
 [SUCCESS] 已选择 img.gz 格式
 
 选择启动方式:
@@ -136,11 +134,11 @@ GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 [SUCCESS] 找到 2 个可用存储池
 
 可用的存储池:
-1) local-lvm (类型: lvm-thin, 支持格式: raw, 大小: 100G, 已用: 20G, 可用: 80G)
-2) local (类型: dir, 支持格式: qcow2,raw,vmdk, 大小: 500G, 已用: 150G, 可用: 350G)
+1) local-lvm (类型: lvm-thin, 大小: 100G, 已用: 20G, 可用: 80G)
+2) local (类型: dir, 大小: 500G, 已用: 150G, 可用: 350G)
 请选择存储池 (1-2): 1
 [SUCCESS] 已选择存储池: local-lvm
-[INFO] 存储池信息: 类型=lvm-thin, 支持格式=raw, 总大小=100G, 可用空间=80G
+[INFO] 存储池信息: 类型=lvm-thin, 总大小=100G, 可用空间=80G
 
 虚拟机配置:
 请输入CPU核心数 (默认: 2): 2
@@ -263,27 +261,24 @@ Memory: 1024MB
    DOWNLOAD_DIR="/path/to/your/large/disk/luowrt"
    ```
 
-8. **存储格式不兼容错误**
-   - 脚本会自动检测存储池支持的格式
-   - 如果下载的格式不被支持，会自动转换为兼容格式
-   - 支持的存储类型：LVM Thin (raw)、LVM (raw)、ZFS (raw,qcow2)、目录存储 (qcow2,raw,vmdk)等
+8. **磁盘导入和"未使用"状态处理**
+   - 脚本使用 `qm importdisk` 导入磁盘，这是 PVE 的标准做法
+   - 导入后磁盘会显示为 "unused0" 或类似状态，这是正常的
+   - 脚本会自动将导入的磁盘附加到虚拟机并配置为启动磁盘
 
-   **格式转换规则：**
-   - LVM Thin/LVM：只支持 raw 格式，其他格式会自动转换为 raw
-   - 目录存储/NFS：支持 qcow2、raw、vmdk 格式
-   - ZFS/Btrfs：优先使用 raw 格式，也支持 qcow2
-
-   **手动格式转换：**
+   **导入过程：**
    ```bash
-   # qcow2 转为 raw
-   qemu-img convert -f qcow2 -O raw input.qcow2 output.img
+   # 手动导入命令（脚本自动执行）
+   qm importdisk 109 /path/to/disk.qcow2 local
 
-   # vmdk 转为 raw
-   qemu-img convert -f vmdk -O raw input.vmdk output.img
-
-   # 检查存储支持的格式
-   pvesm status <storage_name>
+   # 脚本自动附加磁盘
+   qm set 109 --scsi0 local:109/vm-109-disk-0 --boot c
    ```
+
+   **PVE 原生格式支持：**
+   - qcow2：完全原生支持，无需任何转换
+   - raw：完全原生支持，性能最佳
+   - PVE 会自动处理不同存储类型上的格式兼容性
 
 9. **EFI启动相关问题**
    - 脚本会自动检测并尝试安装EFI固件

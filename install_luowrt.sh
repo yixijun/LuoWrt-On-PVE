@@ -147,11 +147,10 @@ select_rom_version() {
     # 选择文件格式
     echo -e "\n${BLUE}选择文件格式:${NC}"
     echo "1) img.gz (推荐，兼容性最好)"
-    echo "2) qcow2 (QCOW2格式)"
-    echo "3) vmdk (VMware格式)"
+    echo "2) qcow2 (QCOW2格式，PVE原生支持)"
 
     while true; do
-        read -p "请选择文件格式 (1-3): " format_choice
+        read -p "请选择文件格式 (1-2): " format_choice
         case $format_choice in
             1)
                 FILE_FORMAT="img.gz"
@@ -163,13 +162,8 @@ select_rom_version() {
                 print_success "已选择 qcow2 格式"
                 break
                 ;;
-            3)
-                FILE_FORMAT="vmdk"
-                print_success "已选择 vmdk 格式"
-                break
-                ;;
             *)
-                print_error "无效选择，请输入1、2或3"
+                print_error "无效选择，请输入1或2"
                 ;;
         esac
     done
@@ -213,9 +207,6 @@ select_rom_version() {
                 "qcow2")
                     FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.qcow2$"
                     ;;
-                "vmdk")
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.vmdk$"
-                    ;;
             esac
             print_info "EFI模式：优先搜索带有 '-efi' 标识的文件"
             ;;
@@ -227,9 +218,6 @@ select_rom_version() {
                     ;;
                 "qcow2")
                     FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.qcow2$"
-                    ;;
-                "vmdk")
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.vmdk$"
                     ;;
             esac
             print_info "BIOS模式：将搜索标准版本文件（排除EFI和UEFI版本）"
@@ -627,92 +615,16 @@ get_storage_pools() {
     print_success "找到 ${#STORAGE_LIST[@]} 个可用存储池"
 }
 
-# 获取存储池支持的格式
+# 获取存储池支持的格式（简化版，PVE原生支持qcow2和raw）
 get_storage_formats() {
     local storage_name="$1"
 
-    print_info "检测存储池 $storage_name 的支持格式..."
+    print_info "检测存储池 $storage_name..."
 
-    # 方法1：尝试从全局STORAGE_INFO中获取
-    local found_storage=""
-    for storage_item in "${STORAGE_LIST[@]}"; do
-        if [ "$storage_item" = "$storage_name" ]; then
-            found_storage="$storage_item"
-            break
-        fi
-    done
-
-    if [ -n "$found_storage" ]; then
-        # 从已有的存储信息中提取类型
-        storage_line=$(echo "$STORAGE_INFO" | grep "^$storage_name ")
-        if [ -n "$storage_line" ]; then
-            storage_type=$(echo "$storage_line" | awk '{print $2}')
-            print_info "检测到存储类型: $storage_type"
-        else
-            print_warning "无法从STORAGE_INFO中找到存储类型"
-            storage_type=""
-        fi
-    else
-        print_warning "存储池 $storage_name 不在已知列表中"
-        storage_type=""
-    fi
-
-    # 方法2：如果上面失败，尝试直接获取
-    if [ -z "$storage_type" ]; then
-        print_info "尝试直接获取存储池信息..."
-        storage_info=$(pvesm status "$storage_name" 2>/dev/null | awk 'NR>1' | head -n1)
-        if [ -n "$storage_info" ]; then
-            storage_type=$(echo "$storage_info" | awk '{print $2}')
-            print_info "直接获取到存储类型: $storage_type"
-        else
-            print_warning "无法获取存储池类型，使用默认配置"
-            storage_type="unknown"
-        fi
-    fi
-
-    # 根据存储类型返回支持的格式
-    case "$storage_type" in
-        "lvm-thin")
-            echo "raw"
-            print_info "LVM Thin 存储：支持 raw 格式"
-            ;;
-        "lvm")
-            echo "raw"
-            print_info "LVM 存储：支持 raw 格式"
-            ;;
-        "dir")
-            echo "qcow2,raw,vmdk"
-            print_info "目录存储：支持 qcow2, raw, vmdk 格式"
-            ;;
-        "nfs")
-            echo "qcow2,raw,vmdk"
-            print_info "NFS 存储：支持 qcow2, raw, vmdk 格式"
-            ;;
-        "zfspool")
-            echo "raw,qcow2"
-            print_info "ZFS 存储：支持 raw, qcow2 格式"
-            ;;
-        "btrfs")
-            echo "raw,qcow2"
-            print_info "Btrfs 存储：支持 raw, qcow2 格式"
-            ;;
-        "cephfs")
-            echo "raw"
-            print_info "CephFS 存储：支持 raw 格式"
-            ;;
-        "rbd")
-            echo "raw"
-            print_info "Ceph RBD 存储：支持 raw 格式"
-            ;;
-        "unknown"|"")
-            echo "qcow2,raw,vmdk"
-            print_warning "未知存储类型，假设支持常见格式：qcow2, raw, vmdk"
-            ;;
-        *)
-            echo "qcow2,raw,vmdk"
-            print_info "存储类型 $storage_type：假设支持 qcow2, raw, vmdk 格式"
-            ;;
-    esac
+    # PVE 原生支持 qcow2 和 raw 格式，大多数存储类型都支持
+    # 简化处理，返回常用格式
+    echo "qcow2,raw"
+    print_info "PVE 原生支持格式: qcow2, raw"
 }
 
 # 选择存储池
@@ -887,132 +799,56 @@ check_efi_firmware() {
     return 0
 }
 
-# 检查并转换文件格式兼容性
+# 检查文件格式兼容性（PVE原生支持qcow2，无需转换）
 check_format_compatibility() {
     local current_format="$FILE_FORMAT"
-    local supported_formats="$SUPPORTED_FORMATS"
 
     print_info "检查文件格式兼容性..."
     print_info "当前文件格式: $current_format"
     print_info "存储池: $VM_STORAGE"
-    print_info "存储池支持格式: $supported_formats"
 
-    # 调试信息
-    print_info "调试信息:"
-    print_info "  - STORAGE_MAP条目: ${STORAGE_MAP[$VM_STORAGE]}"
-    print_info "  - SUPPORTED_FORMATS变量: $SUPPORTED_FORMATS"
-
-    # 如果支持的格式是 unknown 或空，提供默认值
-    if [ "$supported_formats" = "unknown" ] || [ -z "$supported_formats" ]; then
-        print_warning "无法检测存储池支持格式，使用默认配置"
-        supported_formats="qcow2,raw,vmdk"
-        print_info "设置默认支持格式: $supported_formats"
-    fi
-
-    # 检查当前格式是否被支持
-    if echo "$supported_formats" | grep -q -w "$current_format"; then
-        print_success "文件格式兼容"
+    # PVE 原生支持 qcow2 和 raw 格式，无需转换
+    if [ "$current_format" = "qcow2" ] || [ "$current_format" = "raw" ]; then
+        print_success "文件格式受 PVE 原生支持"
+        return 0
+    elif [ "$current_format" = "img.gz" ]; then
+        print_info "img.gz 格式将解压为 raw 格式"
+        return 0
+    else
+        print_warning "不常见的文件格式: $current_format"
+        print_info "尝试直接导入，PVE 可能支持该格式"
         return 0
     fi
+}
 
-    # 如果不支持，尝试转换
-    print_warning "文件格式不兼容，需要转换..."
+# 导入磁盘并处理"未使用"状态
+import_and_attach_disk() {
+    print_info "正在导入磁盘镜像..."
 
-    # 优先级：raw > qcow2 > vmdk (大多数存储都支持raw)
-    if echo "$supported_formats" | grep -q -w "raw"; then
-        convert_to_raw
-    elif echo "$supported_formats" | grep -q -w "qcow2"; then
-        convert_to_qcow2
-    elif echo "$supported_formats" | grep -q -w "vmdk"; then
-        convert_to_vmdk
+    # 使用qm importdisk导入磁盘
+    if qm importdisk "$NEXT_ID" "$IMAGE_FILE" "$VM_STORAGE"; then
+        print_success "磁盘镜像导入成功"
+
+        # 获取导入后的磁盘ID（通常是vm-$NEXT_ID-disk-0）
+        DISK_ID="vm-$NEXT_ID-disk-0"
+        DISK_PATH="$VM_STORAGE:$DISK_ID"
+
+        print_info "检测到导入的磁盘: $DISK_PATH"
+
+        # 附加磁盘到虚拟机
+        print_info "正在附加磁盘到虚拟机..."
+        qm set "$NEXT_ID" \
+            --scsi0 "$DISK_PATH" \
+            --boot c \
+            --agent enabled=1
+
+        print_success "磁盘附加完成"
+
+        return 0
     else
-        print_error "无法找到兼容的格式"
+        print_error "磁盘镜像导入失败"
         return 1
     fi
-}
-
-# 转换为raw格式
-convert_to_raw() {
-    print_info "转换为raw格式..."
-    local temp_raw_file="${DOWNLOAD_DIR}/$(basename "$IMAGE_FILE" .${FILE_FORMAT}).img"
-
-    case "$FILE_FORMAT" in
-        "qcow2")
-            if qemu-img convert -f qcow2 -O raw "$IMAGE_FILE" "$temp_raw_file"; then
-                print_success "qcow2转换为raw格式完成"
-                IMAGE_FILE="$temp_raw_file"
-                FILE_FORMAT="raw"
-                return 0
-            fi
-            ;;
-        "vmdk")
-            if qemu-img convert -f vmdk -O raw "$IMAGE_FILE" "$temp_raw_file"; then
-                print_success "vmdk转换为raw格式完成"
-                IMAGE_FILE="$temp_raw_file"
-                FILE_FORMAT="raw"
-                return 0
-            fi
-            ;;
-    esac
-
-    print_error "格式转换失败"
-    return 1
-}
-
-# 转换为qcow2格式
-convert_to_qcow2() {
-    print_info "转换为qcow2格式..."
-    local temp_qcow2_file="${DOWNLOAD_DIR}/$(basename "$IMAGE_FILE" .${FILE_FORMAT}).qcow2"
-
-    case "$FILE_FORMAT" in
-        "raw")
-            if qemu-img convert -f raw -O qcow2 "$IMAGE_FILE" "$temp_qcow2_file"; then
-                print_success "raw转换为qcow2格式完成"
-                IMAGE_FILE="$temp_qcow2_file"
-                FILE_FORMAT="qcow2"
-                return 0
-            fi
-            ;;
-        "vmdk")
-            if qemu-img convert -f vmdk -O qcow2 "$IMAGE_FILE" "$temp_qcow2_file"; then
-                print_success "vmdk转换为qcow2格式完成"
-                IMAGE_FILE="$temp_qcow2_file"
-                FILE_FORMAT="qcow2"
-                return 0
-            fi
-            ;;
-    esac
-
-    print_error "格式转换失败"
-    return 1
-}
-
-# 转换为vmdk格式
-convert_to_vmdk() {
-    print_info "转换为vmdk格式..."
-    local temp_vmdk_file="${DOWNLOAD_DIR}/$(basename "$IMAGE_FILE" .${FILE_FORMAT}).vmdk"
-
-    case "$FILE_FORMAT" in
-        "raw")
-            if qemu-img convert -f raw -O vmdk "$IMAGE_FILE" "$temp_vmdk_file"; then
-                print_success "raw转换为vmdk格式完成"
-                IMAGE_FILE="$temp_vmdk_file"
-                FILE_FORMAT="vmdk"
-                return 0
-            fi
-            ;;
-        "qcow2")
-            if qemu-img convert -f qcow2 -O vmdk "$IMAGE_FILE" "$temp_vmdk_file"; then
-                print_success "qcow2转换为vmdk格式完成"
-                IMAGE_FILE="$temp_vmdk_file"
-                FILE_FORMAT="vmdk"
-                return 0
-            fi
-            ;;
-    esac
-
-    print_error "格式转换失败"
-    return 1
 }
 
 # 创建虚拟机
@@ -1052,21 +888,17 @@ create_vm() {
     # 创建虚拟机
     eval "$VM_CREATE_CMD"
 
-    # 导入磁盘镜像
-    print_info "正在导入磁盘镜像..."
-    qm importdisk "$NEXT_ID" "$IMAGE_FILE" "$VM_STORAGE"
+    # 导入并附加磁盘
+    if ! import_and_attach_disk; then
+        print_error "磁盘导入失败，无法继续创建虚拟机"
+        exit 1
+    fi
 
-    # 配置磁盘
+    # 如果是EFI模式，还需要配置EFI磁盘
     if [ "$BOOT_MODE" = "efi" ]; then
+        # 确保EFI磁盘被正确配置
         qm set "$NEXT_ID" \
-            --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
             --efidisk0 "$VM_STORAGE:vm-$NEXT_ID-efidisk-0" \
-            --boot c \
-            --agent enabled=1
-    else
-        qm set "$NEXT_ID" \
-            --scsi0 "$VM_STORAGE:vm-$NEXT_ID-disk-0" \
-            --ide2 "$VM_STORAGE:cloudinit" \
             --boot c \
             --agent enabled=1
     fi
@@ -1087,7 +919,7 @@ create_vm() {
     print_info "CPU: $cpu_cores cores"
     print_info "Memory: ${memory_size}MB"
     print_info "Storage: $VM_STORAGE"
-    print_info "Final Format: $FILE_FORMAT"
+    print_info "File Format: $FILE_FORMAT"
     print_info "Boot Mode: $BOOT_MODE"
     if [ "$BOOT_MODE" = "efi" ]; then
         print_info "EFI Firmware: $BOOT_FIRMWARE"
