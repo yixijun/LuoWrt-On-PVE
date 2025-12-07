@@ -21,6 +21,31 @@ VM_STORAGE=""  # PVE存储名称，将由用户选择
 # 创建下载目录
 mkdir -p "$DOWNLOAD_DIR"
 
+# 检查临时目录空间
+check_disk_space() {
+    # 获取下载目录所在分区的可用空间（MB）
+    AVAILABLE_SPACE=$(df -m "$DOWNLOAD_DIR" | awk 'NR==2 {print $4}')
+    if [ "$AVAILABLE_SPACE" -lt 2048 ]; then  # 少于2GB空间
+        print_warning "临时目录空间不足 ($AVAILABLE_SPACE MB)"
+        print_info "尝试使用 /tmp 目录..."
+
+        # 如果当前目录空间不足，尝试使用 /tmp
+        if [ "$DOWNLOAD_DIR" != "/tmp/openwrt" ]; then
+            DOWNLOAD_DIR="/tmp/openwrt"
+            mkdir -p "$DOWNLOAD_DIR"
+            AVAILABLE_SPACE=$(df -m "$DOWNLOAD_DIR" | awk 'NR==2 {print $4}')
+            if [ "$AVAILABLE_SPACE" -lt 2048 ]; then
+                print_error "临时目录空间仍然不足 ($AVAILABLE_SPACE MB)，请清理磁盘空间"
+                exit 1
+            fi
+            print_success "使用 /tmp/openwrt 作为下载目录，可用空间: $AVAILABLE_SPACE MB"
+        else
+            print_error "临时目录空间不足 ($AVAILABLE_SPACE MB)，请清理磁盘空间后重试"
+            exit 1
+        fi
+    fi
+}
+
 # 打印带颜色的消息
 print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
