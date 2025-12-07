@@ -607,12 +607,60 @@ get_storage_pools() {
             STORAGE_USED=$(echo "$line" | awk '{print $4}')
             STORAGE_AVAIL=$(echo "$line" | awk '{print $5}')
 
+            # 获取存储池支持的格式
+            SUPPORTED_FORMATS=$(get_storage_formats "$STORAGE_NAME")
+
             STORAGE_LIST+=("$STORAGE_NAME")
-            STORAGE_MAP["$STORAGE_NAME"]="$STORAGE_TYPE|$STORAGE_SIZE|$STORAGE_USED|$STORAGE_AVAIL"
+            STORAGE_MAP["$STORAGE_NAME"]="$STORAGE_TYPE|$STORAGE_SIZE|$STORAGE_USED|$STORAGE_AVAIL|$SUPPORTED_FORMATS"
         fi
     done <<< "$STORAGE_INFO"
 
     print_success "找到 ${#STORAGE_LIST[@]} 个可用存储池"
+}
+
+# 获取存储池支持的格式
+get_storage_formats() {
+    local storage_name="$1"
+
+    # 使用pvesm命令获取存储池详细信息
+    storage_info=$(pvesm status "$storage_name" 2>/dev/null | awk 'NR>1' | head -n1)
+
+    if [ -z "$storage_info" ]; then
+        echo "unknown"
+        return
+    fi
+
+    storage_type=$(echo "$storage_info" | awk '{print $2}')
+
+    case "$storage_type" in
+        "lvm-thin")
+            echo "raw"  # LVM Thin 只支持 raw 格式
+            ;;
+        "lvm")
+            echo "raw"  # LVM 只支持 raw 格式
+            ;;
+        "dir")
+            echo "qcow2,raw,vmdk"  # 目录存储支持多种格式
+            ;;
+        "nfs")
+            echo "qcow2,raw,vmdk"  # NFS 支持多种格式
+            ;;
+        "zfspool")
+            echo "raw,qcow2"  # ZFS 支持 raw 和 qcow2
+            ;;
+        "btrfs")
+            echo "raw,qcow2"  # Btrfs 支持 raw 和 qcow2
+            ;;
+        "cephfs")
+            echo "raw"  # CephFS 通常只支持 raw
+            ;;
+        "rbd")
+            echo "raw"  # Ceph RBD 只支持 raw
+            ;;
+        *)
+            echo "qcow2,raw,vmdk"  # 默认假设支持常见格式
+            ;;
+    esac
 }
 
 # 选择存储池
@@ -621,10 +669,10 @@ select_storage_pool() {
 
     for i in "${!STORAGE_LIST[@]}"; do
         STORAGE_NAME="${STORAGE_LIST[$i]}"
-        IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL <<< "${STORAGE_MAP[$STORAGE_NAME]}"
+        IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL SUPPORTED_FORMATS <<< "${STORAGE_MAP[$STORAGE_NAME]}"
 
-        printf "%d) %s (类型: %s, 大小: %s, 已用: %s, 可用: %s)\n" \
-            $((i+1)) "$STORAGE_NAME" "$STORAGE_TYPE" "$STORAGE_SIZE" "$STORAGE_USED" "$STORAGE_AVAIL"
+        printf "%d) %s (类型: %s, 支持格式: %s, 大小: %s, 已用: %s, 可用: %s)\n" \
+            $((i+1)) "$STORAGE_NAME" "$STORAGE_TYPE" "$SUPPORTED_FORMATS" "$STORAGE_SIZE" "$STORAGE_USED" "$STORAGE_AVAIL"
     done
 
     while true; do
@@ -632,10 +680,10 @@ select_storage_pool() {
 
         if [[ "$storage_choice" =~ ^[0-9]+$ ]] && [ "$storage_choice" -ge 1 ] && [ "$storage_choice" -le ${#STORAGE_LIST[@]} ]; then
             VM_STORAGE="${STORAGE_LIST[$((storage_choice-1))]}"
-            IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL <<< "${STORAGE_MAP[$VM_STORAGE]}"
+            IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL SUPPORTED_FORMATS <<< "${STORAGE_MAP[$VM_STORAGE]}"
 
             print_success "已选择存储池: $VM_STORAGE"
-            print_info "存储池信息: 类型=$STORAGE_TYPE, 总大小=$STORAGE_SIZE, 可用空间=$STORAGE_AVAIL"
+            print_info "存储池信息: 类型=$STORAGE_TYPE, 支持格式=$SUPPORTED_FORMATS, 总大小=$STORAGE_SIZE, 可用空间=$STORAGE_AVAIL"
             break
         else
             print_error "无效选择，请输入1到${#STORAGE_LIST[@]}之间的数字"
@@ -787,6 +835,121 @@ check_efi_firmware() {
     return 0
 }
 
+# 检查并转换文件格式兼容性
+check_format_compatibility() {
+    local current_format="$FILE_FORMAT"
+    local supported_formats="$SUPPORTED_FORMATS"
+
+    print_info "检查文件格式兼容性..."
+    print_info "当前文件格式: $current_format"
+    print_info "存储池支持格式: $supported_formats"
+
+    # 检查当前格式是否被支持
+    if echo "$supported_formats" | grep -q -w "$current_format"; then
+        print_success "文件格式兼容"
+        return 0
+    fi
+
+    # 如果不支持，尝试转换
+    print_warning "文件格式不兼容，需要转换..."
+
+    # 优先级：raw > qcow2 > vmdk (大多数存储都支持raw)
+    if echo "$supported_formats" | grep -q -w "raw"; then
+        convert_to_raw
+    elif echo "$supported_formats" | grep -q -w "qcow2"; then
+        convert_to_qcow2
+    elif echo "$supported_formats" | grep -q -w "vmdk"; then
+        convert_to_vmdk
+    else
+        print_error "无法找到兼容的格式"
+        return 1
+    fi
+}
+
+# 转换为raw格式
+convert_to_raw() {
+    print_info "转换为raw格式..."
+    local temp_raw_file="${DOWNLOAD_DIR}/$(basename "$IMAGE_FILE" .${FILE_FORMAT}).img"
+
+    case "$FILE_FORMAT" in
+        "qcow2")
+            if qemu-img convert -f qcow2 -O raw "$IMAGE_FILE" "$temp_raw_file"; then
+                print_success "qcow2转换为raw格式完成"
+                IMAGE_FILE="$temp_raw_file"
+                FILE_FORMAT="raw"
+                return 0
+            fi
+            ;;
+        "vmdk")
+            if qemu-img convert -f vmdk -O raw "$IMAGE_FILE" "$temp_raw_file"; then
+                print_success "vmdk转换为raw格式完成"
+                IMAGE_FILE="$temp_raw_file"
+                FILE_FORMAT="raw"
+                return 0
+            fi
+            ;;
+    esac
+
+    print_error "格式转换失败"
+    return 1
+}
+
+# 转换为qcow2格式
+convert_to_qcow2() {
+    print_info "转换为qcow2格式..."
+    local temp_qcow2_file="${DOWNLOAD_DIR}/$(basename "$IMAGE_FILE" .${FILE_FORMAT}).qcow2"
+
+    case "$FILE_FORMAT" in
+        "raw")
+            if qemu-img convert -f raw -O qcow2 "$IMAGE_FILE" "$temp_qcow2_file"; then
+                print_success "raw转换为qcow2格式完成"
+                IMAGE_FILE="$temp_qcow2_file"
+                FILE_FORMAT="qcow2"
+                return 0
+            fi
+            ;;
+        "vmdk")
+            if qemu-img convert -f vmdk -O qcow2 "$IMAGE_FILE" "$temp_qcow2_file"; then
+                print_success "vmdk转换为qcow2格式完成"
+                IMAGE_FILE="$temp_qcow2_file"
+                FILE_FORMAT="qcow2"
+                return 0
+            fi
+            ;;
+    esac
+
+    print_error "格式转换失败"
+    return 1
+}
+
+# 转换为vmdk格式
+convert_to_vmdk() {
+    print_info "转换为vmdk格式..."
+    local temp_vmdk_file="${DOWNLOAD_DIR}/$(basename "$IMAGE_FILE" .${FILE_FORMAT}).vmdk"
+
+    case "$FILE_FORMAT" in
+        "raw")
+            if qemu-img convert -f raw -O vmdk "$IMAGE_FILE" "$temp_vmdk_file"; then
+                print_success "raw转换为vmdk格式完成"
+                IMAGE_FILE="$temp_vmdk_file"
+                FILE_FORMAT="vmdk"
+                return 0
+            fi
+            ;;
+        "qcow2")
+            if qemu-img convert -f qcow2 -O vmdk "$IMAGE_FILE" "$temp_vmdk_file"; then
+                print_success "qcow2转换为vmdk格式完成"
+                IMAGE_FILE="$temp_vmdk_file"
+                FILE_FORMAT="vmdk"
+                return 0
+            fi
+            ;;
+    esac
+
+    print_error "格式转换失败"
+    return 1
+}
+
 # 创建虚拟机
 create_vm() {
     print_info "正在创建虚拟机..."
@@ -796,6 +959,12 @@ create_vm() {
     # 检查EFI固件
     if ! check_efi_firmware; then
         print_warning "使用BIOS启动模式"
+    fi
+
+    # 检查文件格式兼容性
+    if ! check_format_compatibility; then
+        print_error "文件格式兼容性检查失败"
+        exit 1
     fi
 
     # 基本虚拟机创建参数
@@ -853,6 +1022,7 @@ create_vm() {
     print_info "CPU: $cpu_cores cores"
     print_info "Memory: ${memory_size}MB"
     print_info "Storage: $VM_STORAGE"
+    print_info "Final Format: $FILE_FORMAT"
     print_info "Boot Mode: $BOOT_MODE"
     if [ "$BOOT_MODE" = "efi" ]; then
         print_info "EFI Firmware: $BOOT_FIRMWARE"
@@ -886,6 +1056,9 @@ main() {
     select_storage_pool
     get_next_vm_id
     configure_vm
+
+    # 获取存储池支持的格式信息
+    IFS='|' read -r STORAGE_TYPE STORAGE_SIZE STORAGE_USED STORAGE_AVAIL SUPPORTED_FORMATS <<< "${STORAGE_MAP[$VM_STORAGE]}"
 
     # 确认创建
     echo -e "\n${BLUE}配置确认:${NC}"
