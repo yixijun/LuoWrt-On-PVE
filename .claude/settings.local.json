@@ -13,7 +13,8 @@
       "Bash(./test_fixed_storage.sh:*)",
       "Bash(./test_final_storage.sh:*)",
       "Bash(./debug_printf_error.sh:*)",
-      "Bash(./test_no_awk_printf:*)"
+      "Bash(./test_no_awk_printf:*)",
+      "Bash(./test_storage_validation.sh:*)"
     ],
     "deny": [],
     "ask": []

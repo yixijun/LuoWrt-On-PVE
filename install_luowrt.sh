@@ -677,8 +677,8 @@ cleanup_temp_files() {
 get_storage_pools() {
     print_info "正在获取可用的存储池列表..."
 
-    # 使用pvesm命令获取存储池信息
-    STORAGE_INFO=$(pvesm status 2>/dev/null | awk 'NR>1')
+    # 使用pvesm命令获取存储池信息，只获取支持images的存储
+    STORAGE_INFO=$(pvesm status -content images 2>/dev/null | awk 'NR>1')
 
     if [ -z "$STORAGE_INFO" ]; then
         print_error "未找到可用的存储池"
@@ -728,6 +728,14 @@ get_storage_pools() {
     # 解析存储池信息
     while IFS= read -r line; do
         if [ -n "$line" ] && [[ "$line" =~ ^[a-zA-Z0-9_-] ]]; then
+            # 验证存储池是否真正支持VM镜像
+            storage_name=$(echo "$line" | awk '{print $1}')
+            if pvesm status -content images "$storage_name" >/dev/null 2>&1; then
+                echo "验证: $storage_name 支持 images"
+            else
+                echo "跳过: $storage_name 不支持 images"
+                continue
+            fi
             # 使用bash数组解析方式，避免awk问题
             fields_array=($line)
             STORAGE_NAME="${fields_array[0]}"
@@ -1081,6 +1089,14 @@ create_vm() {
 
     VM_NAME="LuoWrt"
 
+    # 验证存储池是否支持VM镜像
+    print_info "验证存储池兼容性..."
+    if ! pvesm status -content images "$VM_STORAGE" >/dev/null 2>&1; then
+        print_error "存储池 '$VM_STORAGE' 不支持VM镜像"
+        print_info "请选择支持 images 内容的存储池"
+        return 1
+    fi
+
     # 检查EFI固件
     if ! check_efi_firmware; then
         print_warning "使用BIOS启动模式"
@@ -1100,12 +1116,19 @@ create_vm() {
 
     # 添加EFI固件配置
     if [ "$BOOT_MODE" = "efi" ]; then
+        # 检查存储是否支持EFI磁盘
+        print_info "EFI模式：验证EFI磁盘支持..."
         VM_CREATE_CMD="$VM_CREATE_CMD --bios ovmf --efidisk0 \"$VM_STORAGE:1,efitype=4m\""
         print_info "EFI模式：将创建EFI磁盘"
     fi
 
-    # 创建虚拟机
-    eval "$VM_CREATE_CMD"
+    # 创建虚拟机（添加错误处理）
+    print_info "执行虚拟机创建命令..."
+    if ! eval "$VM_CREATE_CMD"; then
+        print_error "虚拟机创建失败"
+        return 1
+    fi
+    print_success "虚拟机创建成功"
 
     # 导入磁盘镜像
     print_info "正在导入磁盘镜像..."
@@ -1137,6 +1160,10 @@ create_vm() {
         fi
     else
         print_error "磁盘镜像导入失败"
+        print_error "请检查："
+        print_error "1. 存储池 '$VM_STORAGE' 是否有足够空间"
+        print_error "2. 存储池是否支持VM镜像格式"
+        print_error "3. 镜像文件 '$IMAGE_FILE' 是否存在且格式正确"
         return 1
     fi
 
