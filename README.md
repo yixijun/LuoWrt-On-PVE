@@ -34,7 +34,7 @@
 
 一键运行脚本（自动下载并执行）：
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/yixijun/LuoWrt-On-PVE/main/install_luowrt.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/yixijun/LuoWrt-On-PVE/main/install_luowrt.sh)"
 ```
 
 或者分步执行：
