@@ -677,95 +677,149 @@ cleanup_temp_files() {
 get_storage_pools() {
     print_info "正在获取可用的存储池列表..."
 
-    # 使用pvesm命令获取存储池信息，获取所有存储类型
-    STORAGE_INFO=$(pvesm status | awk 'NR>1')
+    # 使用pvesm命令获取存储池信息
+    STORAGE_INFO=$(pvesm status 2>/dev/null | awk 'NR>1')
 
     if [ -z "$STORAGE_INFO" ]; then
         print_error "未找到可用的存储池"
         exit 1
     fi
 
-    # 解析存储池信息
+    # 初始化变量
     STORAGE_LIST=()
     STORAGE_MAP=()
 
-    while IFS= read -r line; do
-        if [ -n "$line" ]; then
-            # 使用更可靠的字段解析方式
-            # pvesm status 输出格式可能是: storid content type status avail
-            # 或者: storid content type status used avail total
-            # 所以需要智能解析
+    # 格式化数字显示（转换为GB）
+    format_size() {
+        local size=$1
+        if [[ "$size" =~ ^[0-9]+$ ]]; then
+            if [ "$size" -gt 1073741824 ]; then
+                local tb=$((size / 1073741824))
+                local remainder=$((size % 1073741824))
+                if [ "$remainder" -gt 107374182 ]; then
+                    echo "${tb}.$((remainder / 107374182))TB"
+                else
+                    echo "${tb}TB"
+                fi
+            elif [ "$size" -gt 1048576 ]; then
+                local gb=$((size / 1048576))
+                local remainder=$((size % 1048576))
+                if [ "$remainder" -gt 104857 ]; then
+                    echo "${gb}.$((remainder / 104857))GB"
+                else
+                    echo "${gb}GB"
+                fi
+            elif [ "$size" -gt 1024 ]; then
+                local mb=$((size / 1024))
+                local remainder=$((size % 1024))
+                if [ "$remainder" -gt 102 ]; then
+                    echo "${mb}.$((remainder / 102))MB"
+                else
+                    echo "${mb}MB"
+                fi
+            else
+                echo "${size}KB"
+            fi
+        else
+            echo "$size"
+        fi
+    }
 
+    # 解析存储池信息
+    while IFS= read -r line; do
+        if [ -n "$line" ] && [[ "$line" =~ ^[a-zA-Z0-9_-] ]]; then
+            # 使用更简单的字段解析方式
             STORAGE_NAME=$(echo "$line" | awk '{print $1}')
             STORAGE_CONTENT=$(echo "$line" | awk '{print $2}')
             STORAGE_TYPE=$(echo "$line" | awk '{print $3}')
             STORAGE_STATUS=$(echo "$line" | awk '{print $4}')
 
-            # 获取其余字段
-            REMAINING_FIELDS=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf $i" "; print ""}')
-            STORAGE_USED=$(echo "$REMAINING_FIELDS" | awk '{print $1}')
-            STORAGE_AVAIL=$(echo "$REMAINING_FIELDS" | awk '{print $2}')
-            STORAGE_TOTAL=$(echo "$REMAINING_FIELDS" | awk '{print $3}')
+            # 获取数字字段（从第5列开始的所有数字）
+            NUMERIC_FIELDS=$(echo "$line" | awk '{for(i=5;i<=NF;i++) if($i ~ /^[0-9]+$/) print $i}')
 
-            # 智能解析存储池大小信息
-            if [[ "$STORAGE_STATUS" == "active" ]]; then
-                # 如果状态是active，尝试从其他字段获取大小信息
-                if [[ -n "$STORAGE_TOTAL" && "$STORAGE_TOTAL" =~ ^[0-9]+$ ]]; then
-                    STORAGE_SIZE="$STORAGE_TOTAL"
-                elif [[ -n "$STORAGE_AVAIL" && "$STORAGE_AVAIL" =~ ^[0-9]+$ ]]; then
-                    # 如果没有总计信息，尝试使用可用空间+已用空间估算
-                    if [[ -n "$STORAGE_USED" && "$STORAGE_USED" =~ ^[0-9]+$ ]]; then
-                        STORAGE_SIZE=$((STORAGE_AVAIL + STORAGE_USED))
-                    else
-                        STORAGE_SIZE="$STORAGE_AVAIL"
-                    fi
+            # 尝试提取可用空间和已用空间（支持带单位的数值）
+            extract_numeric_size() {
+                local input="$1"
+                # 处理带单位的大小，如 "1.00TB", "500MB" 等
+                if [[ "$input" =~ ^([0-9]+\.?[0-9]*)TB$ ]]; then
+                    local tb="${BASH_REMATCH[1]}"
+                    # 转换为KB (1 TB = 1073741824 KB)
+                    echo "${tb%%.*}1073741824"
+                elif [[ "$input" =~ ^([0-9]+\.?[0-9]*)GB$ ]]; then
+                    local gb="${BASH_REMATCH[1]}"
+                    # 转换为KB (1 GB = 1048576 KB)
+                    echo "${gb%%.*}1048576"
+                elif [[ "$input" =~ ^([0-9]+\.?[0-9]*)MB$ ]]; then
+                    local mb="${BASH_REMATCH[1]}"
+                    # 转换为KB (1 MB = 1024 KB)
+                    echo "${mb%%.*}1024"
+                elif [[ "$input" =~ ^([0-9]+)B$ ]]; then
+                    echo "${BASH_REMATCH[1]}"
+                elif [[ "$input" =~ ^0B$ ]]; then
+                    echo "0"
+                elif [[ "$input" =~ ^[0-9]+$ ]]; then
+                    echo "$input"
                 else
-                    # 尝试从pvesm获取更详细的信息
-                    DETAILED_INFO=$(pvesm status "$STORAGE_NAME" 2>/dev/null | awk "NR==2")
+                    echo ""
+                fi
+            }
+
+            # 从第5列开始提取数值
+            STORAGE_AVAIL=""
+            STORAGE_USED=""
+            field_num=5
+
+            while [ $field_num -le 20 ]; do
+                field_value=$(echo "$line" | awk -v n=$field_num '{print $n}')
+
+                # 跳过空字段和百分比值
+                if [[ -n "$field_value" && ! "$field_value" =~ %$ && ! "$field_value" =~ ^[a-zA-Z]+$ ]]; then
+                    if [[ -z "$STORAGE_AVAIL" ]]; then
+                        STORAGE_AVAIL=$(extract_numeric_size "$field_value")
+                    elif [[ -z "$STORAGE_USED" ]]; then
+                        STORAGE_USED=$(extract_numeric_size "$field_value")
+                        break
+                    fi
+                fi
+
+                ((field_num++))
+            done
+
+            # 智能确定总大小
+            STORAGE_SIZE="未知"
+
+            if [[ "$STORAGE_STATUS" == "active" ]]; then
+                # 如果是active状态，尝试计算总大小
+                if [[ -n "$STORAGE_AVAIL" && "$STORAGE_AVAIL" =~ ^[0-9]+$ ]] && [[ -n "$STORAGE_USED" && "$STORAGE_USED" =~ ^[0-9]+$ ]]; then
+                    STORAGE_SIZE=$((STORAGE_AVAIL + STORAGE_USED))
+                elif [[ -n "$STORAGE_AVAIL" && "$STORAGE_AVAIL" =~ ^[0-9]+$ ]]; then
+                    STORAGE_SIZE="$STORAGE_AVAIL"
+                fi
+
+                # 如果还是没有大小，尝试获取详细信息
+                if [[ "$STORAGE_SIZE" == "未知" ]]; then
+                    DETAILED_INFO=$(pvesm status "$STORAGE_NAME" 2>/dev/null | tail -n +2 | head -n 1)
                     if [ -n "$DETAILED_INFO" ]; then
-                        # 从详细信息中解析总大小
-                        TOTAL_SIZE=$(echo "$DETAILED_INFO" | awk '{print $NF}')
-                        if [[ "$TOTAL_SIZE" =~ ^[0-9]+$ ]]; then
-                            STORAGE_SIZE="$TOTAL_SIZE"
-                        else
-                            STORAGE_SIZE="未知"
+                        # 从详细信息中提取最后一个数字作为总大小
+                        LAST_NUMBER=$(echo "$DETAILED_INFO" | grep -o '[0-9]\+' | tail -n 1)
+                        if [[ -n "$LAST_NUMBER" && "$LAST_NUMBER" =~ ^[0-9]+$ ]]; then
+                            STORAGE_SIZE="$LAST_NUMBER"
                         fi
-                    else
-                        STORAGE_SIZE="未知"
                     fi
                 fi
             else
-                # 如果不是active状态，可能字段顺序不同
+                # 如果状态不是active，可能状态字段本身就是大小
                 if [[ "$STORAGE_STATUS" =~ ^[0-9]+$ ]]; then
-                    STORAGE_SIZE="$STORAGE_STATUS"
-                else
                     STORAGE_SIZE="$STORAGE_STATUS"
                 fi
             fi
-
-            # 格式化数字显示（转换为GB）
-            format_size() {
-                local size=$1
-                if [[ "$size" =~ ^[0-9]+$ ]]; then
-                    if [ "$size" -gt 1073741824 ]; then
-                        echo "$(echo "scale=1; $size/1073741824" | bc 2>/dev/null || echo "$((size/1073741824))")TB"
-                    elif [ "$size" -gt 1048576 ]; then
-                        echo "$(echo "scale=1; $size/1048576" | bc 2>/dev/null || echo "$((size/1048576))")GB"
-                    elif [ "$size" -gt 1024 ]; then
-                        echo "$(echo "scale=1; $size/1024" | bc 2>/dev/null || echo "$((size/1024))")MB"
-                    else
-                        echo "${size}KB"
-                    fi
-                else
-                    echo "$size"
-                fi
-            }
 
             # 格式化显示的大小
             DISPLAY_SIZE=$(format_size "$STORAGE_SIZE")
             DISPLAY_USED=$(format_size "$STORAGE_USED")
             DISPLAY_AVAIL=$(format_size "$STORAGE_AVAIL")
 
+            # 存储到数组和映射
             STORAGE_LIST+=("$STORAGE_NAME")
             STORAGE_MAP["$STORAGE_NAME"]="$STORAGE_TYPE|$DISPLAY_SIZE|$DISPLAY_USED|$DISPLAY_AVAIL"
         fi

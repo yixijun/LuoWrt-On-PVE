@@ -9,7 +9,9 @@
       "Bash(./test_unified_functions.sh:*)",
       "Bash(./test_storage_detection.sh:*)",
       "Bash(./test_storage_simulation.sh:*)",
-      "Bash(./test_specific_case.sh)"
+      "Bash(./test_specific_case.sh)",
+      "Bash(./test_fixed_storage.sh:*)",
+      "Bash(./test_final_storage.sh:*)"
     ],
     "deny": [],
     "ask": []
