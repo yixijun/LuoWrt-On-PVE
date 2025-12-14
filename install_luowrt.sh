@@ -17,6 +17,7 @@ NC='\033[0m' # No Color
 GITHUB_REPO="yixijun/LuoWrt"  # LuoWrt GitHub 仓库名
 DOWNLOAD_DIR="/tmp/luowrt"
 VM_STORAGE=""  # PVE存储名称，将由用户选择
+SYSTEM_ARCH=""  # 系统架构，将由自动检测
 
 # 创建下载目录
 mkdir -p "$DOWNLOAD_DIR"
@@ -87,6 +88,97 @@ check_pve_environment() {
         exit 1
     fi
     print_success "检测到PVE环境"
+}
+
+# 检测系统架构
+detect_system_architecture() {
+    print_info "正在检测系统架构..."
+
+    # 方法1：使用uname命令检测
+    UNAME_ARCH=$(uname -m)
+    case "$UNAME_ARCH" in
+        x86_64|amd64)
+            SYSTEM_ARCH="amd64"
+            ARCH_ALIAS="x86_64"
+            ;;
+        aarch64|arm64)
+            SYSTEM_ARCH="arm64"
+            ARCH_ALIAS="aarch64"
+            ;;
+        armv7l|armhf)
+            SYSTEM_ARCH="arm"
+            ARCH_ALIAS="armv7"
+            ;;
+        *)
+            print_warning "未识别的架构: $UNAME_ARCH"
+            # 方法2：通过检测CPU信息
+            if grep -q "Intel" /proc/cpuinfo 2>/dev/null || grep -q "AMD" /proc/cpuinfo 2>/dev/null; then
+                SYSTEM_ARCH="amd64"
+                ARCH_ALIAS="x86_64"
+                print_info "通过CPU信息检测到x86_64架构"
+            elif grep -q "AArch64" /proc/cpuinfo 2>/dev/null || grep -q "ARMv8" /proc/cpuinfo 2>/dev/null; then
+                SYSTEM_ARCH="arm64"
+                ARCH_ALIAS="aarch64"
+                print_info "通过CPU信息检测到ARM64架构"
+            elif grep -q "ARMv7" /proc/cpuinfo 2>/dev/null; then
+                SYSTEM_ARCH="arm"
+                ARCH_ALIAS="armv7"
+                print_info "通过CPU信息检测到ARMv7架构"
+            else
+                print_error "无法确定系统架构"
+                print_info "支持的架构: amd64 (x86_64), arm64 (aarch64), arm (armv7)"
+                print_info "请手动指定架构或检查系统环境"
+                exit 1
+            fi
+            ;;
+    esac
+
+    # 显示检测结果
+    print_success "检测到系统架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
+
+    # 验证PVE是否支持此架构
+    if [ "$SYSTEM_ARCH" = "amd64" ]; then
+        print_info "x86_64架构 - PVE完全支持"
+    elif [ "$SYSTEM_ARCH" = "arm64" ]; then
+        print_warning "ARM64架构 - 请确保PVE版本支持ARM虚拟化"
+    elif [ "$SYSTEM_ARCH" = "arm" ]; then
+        print_warning "ARM32架构 - PVE支持有限"
+    fi
+}
+
+# 架构选择函数（如果自动检测失败）
+select_architecture() {
+    echo -e "\n${BLUE}请选择系统架构:${NC}"
+    echo "1) amd64 (x86_64) - Intel/AMD 64位处理器"
+    echo "2) arm64 (aarch64) - ARM 64位处理器"
+    echo "3) arm (armv7) - ARM 32位处理器"
+
+    while true; do
+        read -p "请选择架构 (1-3): " arch_choice
+        case $arch_choice in
+            1)
+                SYSTEM_ARCH="amd64"
+                ARCH_ALIAS="x86_64"
+                print_success "已选择 amd64 (x86_64) 架构"
+                break
+                ;;
+            2)
+                SYSTEM_ARCH="arm64"
+                ARCH_ALIAS="aarch64"
+                print_success "已选择 arm64 (aarch64) 架构"
+                break
+                ;;
+            3)
+                SYSTEM_ARCH="arm"
+                ARCH_ALIAS="armv7"
+                print_success "已选择 arm (armv7) 架构"
+                break
+                ;;
+            *)
+                print_error "无效选择，请输入1-3"
+                ;;
+        esac
+    done
 }
 
 # 从GitHub获取最新release信息
@@ -196,39 +288,44 @@ select_rom_version() {
         esac
     done
 
-    # 根据启动方式和文件格式确定文件匹配模式
+    # 根据启动方式、文件格式和架构确定文件匹配模式
     case "$BOOT_MODE" in
         "efi")
             case "$FILE_FORMAT" in
                 "img.gz")
-                    # EFI模式：优先搜索包含 -efi 的文件，如果没有则搜索包含 uefi 的文件
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.img\.gz"
+                    # EFI模式：优先搜索包含架构和efi标识的文件
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS}).*-efi.*\.img\.gz"
                     ;;
                 "qcow2")
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*-efi.*\.qcow2$"
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS}).*-efi.*\.qcow2$"
                     ;;
                         esac
-            print_info "EFI模式：优先搜索带有 '-efi' 标识的文件"
+            print_info "EFI模式：搜索 ${SYSTEM_ARCH} (${ARCH_ALIAS}) 架构的EFI版本文件"
             ;;
         "bios")
             case "$FILE_FORMAT" in
                 "img.gz")
-                    # BIOS模式：明确排除EFI和UEFI版本，只搜索标准版本
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.img\.gz"
+                    # BIOS模式：搜索指定架构的标准版本，排除EFI和UEFI版本
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS})[^e]*\.img\.gz"
                     ;;
                 "qcow2")
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*\.qcow2$"
+                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS})[^e]*\.qcow2$"
                     ;;
                             esac
-            print_info "BIOS模式：将搜索标准版本文件（排除EFI和UEFI版本）"
+            print_info "BIOS模式：搜索 ${SYSTEM_ARCH} (${ARCH_ALIAS}) 架构的标准版本文件"
             ;;
     esac
+
+    # 显示架构信息
+    print_info "目标架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
+    print_info "文件匹配模式: $FILE_PATTERN"
 }
 
 # 下载选中的ROM
 download_rom() {
     print_info "正在搜索$ROM_SIZE MB $FILE_FORMAT 格式的下载链接..."
     print_info "启动模式: $BOOT_MODE"
+    print_info "目标架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
 
     # 调试：显示所有可用的下载链接
     print_info "所有可用文件列表："
@@ -251,7 +348,7 @@ download_rom() {
         else
             # 如果没有找到非EFI版本，尝试使用通用匹配但不包含EFI标识
             print_warning "未找到标准BIOS版本，尝试其他兼容文件..."
-            SELECTED_URL=$(echo "$DOWNLOAD_URLS" | grep -E ".*LuoWrt-${ROM_SIZE}.*\.img\.gz" | grep -v -i "efi\|uefi" | head -n1)
+            SELECTED_URL=$(echo "$DOWNLOAD_URLS" | grep -E ".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS})[^e]*\.img\.gz" | grep -v -i "efi\|uefi" | head -n1)
             if [ -n "$SELECTED_URL" ]; then
                 print_success "找到兼容的BIOS版本文件"
             fi
@@ -268,7 +365,7 @@ download_rom() {
         else
             # 如果没有找到EFI版本，尝试搜索包含uefi的文件
             print_warning "未找到标准EFI版本，尝试搜索UEFI版本文件..."
-            UEFI_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E ".*LuoWrt-${ROM_SIZE}.*uefi.*\.img\.gz")
+            UEFI_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E ".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS}).*uefi.*\.img\.gz")
             if [ -n "$UEFI_CANDIDATES" ]; then
                 SELECTED_URL=$(echo "$UEFI_CANDIDATES" | head -n1)
                 print_success "找到UEFI版本文件"
@@ -887,15 +984,21 @@ main() {
 
     check_pve_environment
 
+    # 检测系统架构
+    if ! detect_system_architecture; then
+        print_warning "自动架构检测失败，请手动选择架构"
+        select_architecture
+    fi
+
     # 检查磁盘空间
     check_disk_space
 
     print_info "使用GitHub仓库: $GITHUB_REPO"
     print_info "下载目录: $DOWNLOAD_DIR"
+    print_info "检测到架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
 
     get_latest_release
     select_rom_version
-    download_rom
     get_storage_pools
     select_storage_pool
     get_next_vm_id
@@ -904,6 +1007,7 @@ main() {
     # 确认创建
     echo -e "\n${BLUE}配置确认:${NC}"
     echo "VM ID: $NEXT_ID"
+    echo "系统架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
     echo "ROM版本: ${ROM_SIZE}MB"
     echo "文件格式: $FILE_FORMAT"
     echo "启动方式: $BOOT_MODE"
@@ -915,6 +1019,7 @@ main() {
     read -p "确认创建虚拟机? (y/n): " confirm
     case $confirm in
         [Yy]* )
+            download_rom
             create_vm
             ;;
         [Nn]* )
