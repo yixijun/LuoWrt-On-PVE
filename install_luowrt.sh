@@ -728,14 +728,12 @@ get_storage_pools() {
     # 解析存储池信息
     while IFS= read -r line; do
         if [ -n "$line" ] && [[ "$line" =~ ^[a-zA-Z0-9_-] ]]; then
-            # 使用更简单的字段解析方式
-            STORAGE_NAME=$(echo "$line" | awk '{print $1}')
-            STORAGE_CONTENT=$(echo "$line" | awk '{print $2}')
-            STORAGE_TYPE=$(echo "$line" | awk '{print $3}')
-            STORAGE_STATUS=$(echo "$line" | awk '{print $4}')
-
-            # 获取数字字段（从第5列开始的所有数字）
-            NUMERIC_FIELDS=$(echo "$line" | awk '{for(i=5;i<=NF;i++) if($i ~ /^[0-9]+$/) print $i}')
+            # 使用bash数组解析方式，避免awk问题
+            fields_array=($line)
+            STORAGE_NAME="${fields_array[0]}"
+            STORAGE_CONTENT="${fields_array[1]}"
+            STORAGE_TYPE="${fields_array[2]}"
+            STORAGE_STATUS="${fields_array[3]}"
 
             # 尝试提取可用空间和已用空间（支持带单位的数值）
             extract_numeric_size() {
@@ -764,15 +762,15 @@ get_storage_pools() {
                 fi
             }
 
-            # 从第5列开始提取数值
+            # 从第5列开始提取数值（索引4开始）
             STORAGE_AVAIL=""
             STORAGE_USED=""
-            field_num=5
+            field_count=${#fields_array[@]}
 
-            while [ $field_num -le 20 ]; do
-                field_value=$(echo "$line" | awk -v n=$field_num '{print $n}')
+            for ((i=4; i<field_count; i++)); do  # 从第5个字段开始
+                field_value="${fields_array[$i]}"
 
-                # 跳过空字段和百分比值
+                # 跳过空字段、百分比值和纯文本字段
                 if [[ -n "$field_value" && ! "$field_value" =~ %$ && ! "$field_value" =~ ^[a-zA-Z]+$ ]]; then
                     if [[ -z "$STORAGE_AVAIL" ]]; then
                         STORAGE_AVAIL=$(extract_numeric_size "$field_value")
@@ -781,8 +779,6 @@ get_storage_pools() {
                         break
                     fi
                 fi
-
-                ((field_num++))
             done
 
             # 智能确定总大小
