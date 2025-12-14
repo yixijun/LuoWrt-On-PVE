@@ -677,8 +677,8 @@ cleanup_temp_files() {
 get_storage_pools() {
     print_info "正在获取可用的存储池列表..."
 
-    # 使用pvesm命令获取存储池信息
-    STORAGE_INFO=$(pvesm status -content images | awk 'NR>1')
+    # 使用pvesm命令获取存储池信息，获取所有存储类型
+    STORAGE_INFO=$(pvesm status | awk 'NR>1')
 
     if [ -z "$STORAGE_INFO" ]; then
         print_error "未找到可用的存储池"
@@ -691,14 +691,83 @@ get_storage_pools() {
 
     while IFS= read -r line; do
         if [ -n "$line" ]; then
+            # 使用更可靠的字段解析方式
+            # pvesm status 输出格式可能是: storid content type status avail
+            # 或者: storid content type status used avail total
+            # 所以需要智能解析
+
             STORAGE_NAME=$(echo "$line" | awk '{print $1}')
-            STORAGE_TYPE=$(echo "$line" | awk '{print $2}')
-            STORAGE_SIZE=$(echo "$line" | awk '{print $3}')
-            STORAGE_USED=$(echo "$line" | awk '{print $4}')
-            STORAGE_AVAIL=$(echo "$line" | awk '{print $5}')
+            STORAGE_CONTENT=$(echo "$line" | awk '{print $2}')
+            STORAGE_TYPE=$(echo "$line" | awk '{print $3}')
+            STORAGE_STATUS=$(echo "$line" | awk '{print $4}')
+
+            # 获取其余字段
+            REMAINING_FIELDS=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf $i" "; print ""}')
+            STORAGE_USED=$(echo "$REMAINING_FIELDS" | awk '{print $1}')
+            STORAGE_AVAIL=$(echo "$REMAINING_FIELDS" | awk '{print $2}')
+            STORAGE_TOTAL=$(echo "$REMAINING_FIELDS" | awk '{print $3}')
+
+            # 智能解析存储池大小信息
+            if [[ "$STORAGE_STATUS" == "active" ]]; then
+                # 如果状态是active，尝试从其他字段获取大小信息
+                if [[ -n "$STORAGE_TOTAL" && "$STORAGE_TOTAL" =~ ^[0-9]+$ ]]; then
+                    STORAGE_SIZE="$STORAGE_TOTAL"
+                elif [[ -n "$STORAGE_AVAIL" && "$STORAGE_AVAIL" =~ ^[0-9]+$ ]]; then
+                    # 如果没有总计信息，尝试使用可用空间+已用空间估算
+                    if [[ -n "$STORAGE_USED" && "$STORAGE_USED" =~ ^[0-9]+$ ]]; then
+                        STORAGE_SIZE=$((STORAGE_AVAIL + STORAGE_USED))
+                    else
+                        STORAGE_SIZE="$STORAGE_AVAIL"
+                    fi
+                else
+                    # 尝试从pvesm获取更详细的信息
+                    DETAILED_INFO=$(pvesm status "$STORAGE_NAME" 2>/dev/null | awk "NR==2")
+                    if [ -n "$DETAILED_INFO" ]; then
+                        # 从详细信息中解析总大小
+                        TOTAL_SIZE=$(echo "$DETAILED_INFO" | awk '{print $NF}')
+                        if [[ "$TOTAL_SIZE" =~ ^[0-9]+$ ]]; then
+                            STORAGE_SIZE="$TOTAL_SIZE"
+                        else
+                            STORAGE_SIZE="未知"
+                        fi
+                    else
+                        STORAGE_SIZE="未知"
+                    fi
+                fi
+            else
+                # 如果不是active状态，可能字段顺序不同
+                if [[ "$STORAGE_STATUS" =~ ^[0-9]+$ ]]; then
+                    STORAGE_SIZE="$STORAGE_STATUS"
+                else
+                    STORAGE_SIZE="$STORAGE_STATUS"
+                fi
+            fi
+
+            # 格式化数字显示（转换为GB）
+            format_size() {
+                local size=$1
+                if [[ "$size" =~ ^[0-9]+$ ]]; then
+                    if [ "$size" -gt 1073741824 ]; then
+                        echo "$(echo "scale=1; $size/1073741824" | bc 2>/dev/null || echo "$((size/1073741824))")TB"
+                    elif [ "$size" -gt 1048576 ]; then
+                        echo "$(echo "scale=1; $size/1048576" | bc 2>/dev/null || echo "$((size/1048576))")GB"
+                    elif [ "$size" -gt 1024 ]; then
+                        echo "$(echo "scale=1; $size/1024" | bc 2>/dev/null || echo "$((size/1024))")MB"
+                    else
+                        echo "${size}KB"
+                    fi
+                else
+                    echo "$size"
+                fi
+            }
+
+            # 格式化显示的大小
+            DISPLAY_SIZE=$(format_size "$STORAGE_SIZE")
+            DISPLAY_USED=$(format_size "$STORAGE_USED")
+            DISPLAY_AVAIL=$(format_size "$STORAGE_AVAIL")
 
             STORAGE_LIST+=("$STORAGE_NAME")
-            STORAGE_MAP["$STORAGE_NAME"]="$STORAGE_TYPE|$STORAGE_SIZE|$STORAGE_USED|$STORAGE_AVAIL"
+            STORAGE_MAP["$STORAGE_NAME"]="$STORAGE_TYPE|$DISPLAY_SIZE|$DISPLAY_USED|$DISPLAY_AVAIL"
         fi
     done <<< "$STORAGE_INFO"
 
