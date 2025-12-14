@@ -4,7 +4,9 @@
       "Bash(bash:*)",
       "WebSearch",
       "Bash(chmod:*)",
-      "Bash(./test_arch.sh:*)"
+      "Bash(./test_arch.sh:*)",
+      "Bash(./test_file_matching.sh:*)",
+      "Bash(./test_unified_functions.sh:*)"
     ],
     "deny": [],
     "ask": []

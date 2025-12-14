@@ -32,19 +32,20 @@
 
 ## 使用方法
 
+一键运行脚本（自动下载并执行）：
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/yixijun/LuoWrt-On-PVE/main/install_luowrt.sh)"
+```
+
+或者分步执行：
 1. 将脚本下载到您的 PVE 主机：
 ```bash
 wget https://raw.githubusercontent.com/yixijun/LuoWrt-On-PVE/main/install_luowrt.sh
 ```
 
-2. 添加执行权限：
+2. 添加执行权限并运行：
 ```bash
-chmod +x install_luowrt.sh
-```
-
-3. 运行脚本：
-```bash
-sudo ./install_luowrt.sh
+chmod +x install_luowrt.sh && sudo ./install_luowrt.sh
 ```
 
 ## 配置说明

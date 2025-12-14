@@ -100,6 +100,7 @@ detect_system_architecture() {
         x86_64|amd64)
             SYSTEM_ARCH="amd64"
             ARCH_ALIAS="x86_64"
+            ARCH_VARIANTS="x86-64"
             ;;
         aarch64|arm64)
             SYSTEM_ARCH="arm64"
@@ -108,6 +109,7 @@ detect_system_architecture() {
         armv7l|armhf)
             SYSTEM_ARCH="arm"
             ARCH_ALIAS="armv7"
+            ARCH_VARIANTS="arm"
             ;;
         *)
             print_warning "未识别的架构: $UNAME_ARCH"
@@ -115,6 +117,7 @@ detect_system_architecture() {
             if grep -q "Intel" /proc/cpuinfo 2>/dev/null || grep -q "AMD" /proc/cpuinfo 2>/dev/null; then
                 SYSTEM_ARCH="amd64"
                 ARCH_ALIAS="x86_64"
+                ARCH_VARIANTS="x86-64"
                 print_info "通过CPU信息检测到x86_64架构"
             elif grep -q "AArch64" /proc/cpuinfo 2>/dev/null || grep -q "ARMv8" /proc/cpuinfo 2>/dev/null; then
                 SYSTEM_ARCH="arm64"
@@ -123,6 +126,7 @@ detect_system_architecture() {
             elif grep -q "ARMv7" /proc/cpuinfo 2>/dev/null; then
                 SYSTEM_ARCH="arm"
                 ARCH_ALIAS="armv7"
+                ARCH_VARIANTS="arm"
                 print_info "通过CPU信息检测到ARMv7架构"
             else
                 print_error "无法确定系统架构"
@@ -159,6 +163,7 @@ select_architecture() {
             1)
                 SYSTEM_ARCH="amd64"
                 ARCH_ALIAS="x86_64"
+                ARCH_VARIANTS="x86-64"
                 print_success "已选择 amd64 (x86_64) 架构"
                 break
                 ;;
@@ -171,6 +176,7 @@ select_architecture() {
             3)
                 SYSTEM_ARCH="arm"
                 ARCH_ALIAS="armv7"
+                ARCH_VARIANTS="arm"
                 print_success "已选择 arm (armv7) 架构"
                 break
                 ;;
@@ -288,36 +294,23 @@ select_rom_version() {
         esac
     done
 
-    # 根据启动方式、文件格式和架构确定文件匹配模式
+    # 使用统一函数构建架构信息和文件匹配模式
+    ARCH_DISPLAY=$(build_arch_pattern "display")
+    ARCH_PATTERN=$(build_arch_pattern "pattern")
+    FILE_PATTERN=$(build_file_pattern "$ROM_SIZE" "$BOOT_MODE" "$FILE_FORMAT" "$ARCH_PATTERN")
+
+    # 显示架构信息
+    print_info "目标架构: $ARCH_DISPLAY"
+
     case "$BOOT_MODE" in
         "efi")
-            case "$FILE_FORMAT" in
-                "img.gz")
-                    # EFI模式：优先搜索包含架构和efi标识的文件
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS}).*-efi.*\.img\.gz"
-                    ;;
-                "qcow2")
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS}).*-efi.*\.qcow2$"
-                    ;;
-                        esac
-            print_info "EFI模式：搜索 ${SYSTEM_ARCH} (${ARCH_ALIAS}) 架构的EFI版本文件"
+            print_info "EFI模式：搜索 ${ARCH_DISPLAY} 架构的EFI版本文件"
             ;;
         "bios")
-            case "$FILE_FORMAT" in
-                "img.gz")
-                    # BIOS模式：搜索指定架构的标准版本，排除EFI和UEFI版本
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS})[^e]*\.img\.gz"
-                    ;;
-                "qcow2")
-                    FILE_PATTERN=".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS})[^e]*\.qcow2$"
-                    ;;
-                            esac
-            print_info "BIOS模式：搜索 ${SYSTEM_ARCH} (${ARCH_ALIAS}) 架构的标准版本文件"
+            print_info "BIOS模式：搜索 ${ARCH_DISPLAY} 架构的标准版本文件"
             ;;
     esac
 
-    # 显示架构信息
-    print_info "目标架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
     print_info "文件匹配模式: $FILE_PATTERN"
 }
 
@@ -325,7 +318,12 @@ select_rom_version() {
 download_rom() {
     print_info "正在搜索$ROM_SIZE MB $FILE_FORMAT 格式的下载链接..."
     print_info "启动模式: $BOOT_MODE"
-    print_info "目标架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
+
+    # 使用统一函数构建架构信息
+    ARCH_DISPLAY=$(build_arch_pattern "display")
+    ARCH_PATTERN=$(build_arch_pattern "pattern")
+
+    print_info "目标架构: $ARCH_DISPLAY"
 
     # 调试：显示所有可用的下载链接
     print_info "所有可用文件列表："
@@ -336,19 +334,25 @@ download_rom() {
         fi
     done
 
+    # 使用统一函数构建文件匹配模式
+    FILE_PATTERN=$(build_file_pattern "$ROM_SIZE" "$BOOT_MODE" "$FILE_FORMAT" "$ARCH_PATTERN")
+
     # 从下载链接中找到匹配的文件
     if [ "$BOOT_MODE" = "bios" ]; then
         # BIOS模式：排除所有EFI和UEFI版本的文件
         print_info "BIOS模式：筛选标准版本文件（排除EFI/UEFI版本）..."
-        BIOS_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E "$FILE_PATTERN" | grep -v -i "efi\|uefi")
+
+        # 构建BIOS模式的基础匹配模式（不包含EFI标识）
+        local bios_pattern=$(build_file_pattern "$ROM_SIZE" "generic" "$FILE_FORMAT" "$ARCH_PATTERN")
+        BIOS_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E "$bios_pattern" | grep -v -i "efi\|uefi")
 
         if [ -n "$BIOS_CANDIDATES" ]; then
             SELECTED_URL=$(echo "$BIOS_CANDIDATES" | head -n1)
             print_success "找到BIOS兼容版本文件"
         else
-            # 如果没有找到非EFI版本，尝试使用通用匹配但不包含EFI标识
+            # 如果没有找到非EFI版本，使用通用模式排除EFI
             print_warning "未找到标准BIOS版本，尝试其他兼容文件..."
-            SELECTED_URL=$(echo "$DOWNLOAD_URLS" | grep -E ".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS})[^e]*\.img\.gz" | grep -v -i "efi\|uefi" | head -n1)
+            SELECTED_URL=$(echo "$DOWNLOAD_URLS" | grep -E "$bios_pattern" | grep -v -i "efi\|uefi" | head -n1)
             if [ -n "$SELECTED_URL" ]; then
                 print_success "找到兼容的BIOS版本文件"
             fi
@@ -357,7 +361,7 @@ download_rom() {
         # EFI模式：优先搜索EFI版本的文件
         print_info "EFI模式：搜索EFI版本文件..."
 
-        # 首先尝试精确匹配EFI版本
+        # 使用预构建的EFI文件匹配模式
         EFI_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E "$FILE_PATTERN")
         if [ -n "$EFI_CANDIDATES" ]; then
             SELECTED_URL=$(echo "$EFI_CANDIDATES" | head -n1)
@@ -365,7 +369,8 @@ download_rom() {
         else
             # 如果没有找到EFI版本，尝试搜索包含uefi的文件
             print_warning "未找到标准EFI版本，尝试搜索UEFI版本文件..."
-            UEFI_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E ".*LuoWrt-${ROM_SIZE}.*(${SYSTEM_ARCH}|${ARCH_ALIAS}).*uefi.*\.img\.gz")
+            local uefi_pattern=".*LuoWrt-${ROM_SIZE}.*${ARCH_PATTERN}.*uefi.*\.img\.gz"
+            UEFI_CANDIDATES=$(echo "$DOWNLOAD_URLS" | grep -E "$uefi_pattern")
             if [ -n "$UEFI_CANDIDATES" ]; then
                 SELECTED_URL=$(echo "$UEFI_CANDIDATES" | head -n1)
                 print_success "找到UEFI版本文件"
@@ -803,6 +808,74 @@ configure_vm() {
     done
 }
 
+# 统一的架构匹配函数
+build_arch_pattern() {
+    local purpose="$1"  # "display", "pattern", 或 "full"
+
+    # 构建完整的架构匹配模式
+    local arch_pattern="(${SYSTEM_ARCH}|${ARCH_ALIAS}"
+    if [ -n "$ARCH_VARIANTS" ]; then
+        arch_pattern="$arch_pattern|$ARCH_VARIANTS"
+    fi
+    arch_pattern="$arch_pattern)"
+
+    case "$purpose" in
+        "display")
+            # 用于显示的格式
+            local arch_display="$SYSTEM_ARCH ($ARCH_ALIAS"
+            if [ -n "$ARCH_VARIANTS" ]; then
+                arch_display="$arch_display, $ARCH_VARIANTS"
+            fi
+            arch_display="$arch_display)"
+            echo "$arch_display"
+            ;;
+        "pattern")
+            # 用于正则匹配的格式
+            echo "$arch_pattern"
+            ;;
+        "full")
+            # 包含显示和匹配的完整信息
+            local arch_display="$SYSTEM_ARCH ($ARCH_ALIAS"
+            if [ -n "$ARCH_VARIANTS" ]; then
+                arch_display="$arch_display, $ARCH_VARIANTS"
+            fi
+            arch_display="$arch_display)"
+            echo "$arch_display|$arch_pattern"
+            ;;
+    esac
+}
+
+# 统一的文件匹配函数
+build_file_pattern() {
+    local rom_size="$1"
+    local boot_mode="$2"
+    local file_format="$3"
+    local arch_pattern="$4"
+
+    case "$boot_mode" in
+        "efi")
+            case "$file_format" in
+                "img.gz")
+                    echo ".*LuoWrt-${rom_size}.*${arch_pattern}.*-efi.*\.img\.gz"
+                    ;;
+                "qcow2")
+                    echo ".*LuoWrt-${rom_size}.*${arch_pattern}.*-efi.*\.qcow2$"
+                    ;;
+            esac
+            ;;
+        "bios"|"generic")
+            case "$file_format" in
+                "img.gz")
+                    echo ".*LuoWrt-${rom_size}.*${arch_pattern}.*\.img\.gz"
+                    ;;
+                "qcow2")
+                    echo ".*LuoWrt-${rom_size}.*${arch_pattern}.*\.qcow2$"
+                    ;;
+            esac
+            ;;
+    esac
+}
+
 # 检查并安装EFI固件
 check_efi_firmware() {
     # 初始化变量
@@ -995,7 +1068,7 @@ main() {
 
     print_info "使用GitHub仓库: $GITHUB_REPO"
     print_info "下载目录: $DOWNLOAD_DIR"
-    print_info "检测到架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
+    print_info "检测到架构: $(build_arch_pattern "display")"
 
     get_latest_release
     select_rom_version
@@ -1007,7 +1080,7 @@ main() {
     # 确认创建
     echo -e "\n${BLUE}配置确认:${NC}"
     echo "VM ID: $NEXT_ID"
-    echo "系统架构: $SYSTEM_ARCH ($ARCH_ALIAS)"
+    echo "系统架构: $(build_arch_pattern "display")"
     echo "ROM版本: ${ROM_SIZE}MB"
     echo "文件格式: $FILE_FORMAT"
     echo "启动方式: $BOOT_MODE"
