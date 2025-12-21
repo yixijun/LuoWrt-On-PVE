@@ -14,7 +14,9 @@
       "Bash(./test_final_storage.sh:*)",
       "Bash(./debug_printf_error.sh:*)",
       "Bash(./test_no_awk_printf:*)",
-      "Bash(./test_storage_validation.sh:*)"
+      "Bash(./test_storage_validation.sh:*)",
+      "Bash(pvesm status:*)",
+      "Bash(./test_storage_fix.sh:*)"
     ],
     "deny": [],
     "ask": []
