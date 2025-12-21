@@ -523,6 +523,7 @@ get_storage_pools() {
 # 选择存储池
 select_storage_pool() {
     echo -e "\n${BLUE}可用的存储池:${NC}"
+    echo -e "${YELLOW}提示: lvmthin/lvm 类型支持 EFI 启动，dir 类型仅支持 BIOS 启动${NC}"
     
     for i in "${!STORAGE_LIST[@]}"; do
         local name="${STORAGE_LIST[$i]}"
@@ -530,8 +531,15 @@ select_storage_pool() {
         
         IFS='|' read -r type total used avail <<< "$info"
         
-        printf "%d) %s (类型: %s, 总量: %s, 已用: %s, 可用: %s)\n" \
-            $((i+1)) "$name" "$type" "$total" "$used" "$avail"
+        local note=""
+        if [ "$type" = "dir" ]; then
+            note=" ${YELLOW}[仅BIOS]${NC}"
+        elif [ "$type" = "lvmthin" ] || [ "$type" = "lvm" ]; then
+            note=" ${GREEN}[支持EFI]${NC}"
+        fi
+        
+        printf "%d) %s (类型: %s, 总量: %s, 已用: %s, 可用: %s)%b\n" \
+            $((i+1)) "$name" "$type" "$total" "$used" "$avail" "$note"
     done
     
     while true; do
@@ -698,8 +706,20 @@ create_vm() {
     create_cmd+=" --scsihw virtio-scsi-pci"
     
     if [ "$BOOT_MODE" = "efi" ]; then
-        create_cmd+=" --bios ovmf"
-        create_cmd+=" --efidisk0 $VM_STORAGE:1,efitype=4m"
+        # EFI 模式需要存储池支持 images 来创建 efidisk
+        # 检查存储池类型，dir 类型通常不支持
+        local storage_type
+        storage_type=$(pvesm status 2>/dev/null | awk -v name="$VM_STORAGE" '$1==name {print $2}')
+        
+        if [ "$storage_type" = "dir" ]; then
+            print_warning "存储池 '$VM_STORAGE' 是目录类型，可能不支持 EFI 磁盘"
+            print_info "自动切换到 BIOS 启动模式"
+            BOOT_MODE="bios"
+            BOOT_MACHINE="pc"
+        else
+            create_cmd+=" --bios ovmf"
+            create_cmd+=" --efidisk0 $VM_STORAGE:1,efitype=4m"
+        fi
     fi
     
     print_info "执行虚拟机创建命令..."
