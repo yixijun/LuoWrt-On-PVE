@@ -475,8 +475,7 @@ format_bytes() {
 get_storage_pools() {
     print_info "正在获取可用的存储池列表..."
     
-    # pvesm status 输出格式: Name Type Status Total Used Available
-    # 数值单位是字节
+    # pvesm status 输出格式: Name Type Status Total Used Available (字节)
     local storage_info
     storage_info=$(pvesm status 2>/dev/null | awk 'NR>1')
     
@@ -507,23 +506,6 @@ get_storage_pools() {
             continue
         fi
         
-        # 检查是否支持VM镜像 - 使用 pvesm 配置检查
-        local supports_images="false"
-        local storage_content
-        storage_content=$(pvesm list "$name" --content images 2>&1)
-        if [ $? -eq 0 ]; then
-            supports_images="true"
-        fi
-        
-        # 备用方法：检查存储配置
-        if [ "$supports_images" = "false" ]; then
-            local cfg_content
-            cfg_content=$(grep -A10 "^${name}:" /etc/pve/storage.cfg 2>/dev/null | grep "content" | head -1)
-            if [[ "$cfg_content" == *"images"* ]]; then
-                supports_images="true"
-            fi
-        fi
-        
         # 格式化显示（数值是字节）
         local display_total display_used display_avail
         display_total=$(format_bytes "$total")
@@ -531,7 +513,7 @@ get_storage_pools() {
         display_avail=$(format_bytes "$avail")
         
         STORAGE_LIST+=("$name")
-        STORAGE_MAP["$name"]="$type|$display_total|$display_used|$display_avail|$supports_images"
+        STORAGE_MAP["$name"]="$type|$display_total|$display_used|$display_avail"
         
     done <<< "$storage_info"
     
@@ -541,25 +523,15 @@ get_storage_pools() {
 # 选择存储池
 select_storage_pool() {
     echo -e "\n${BLUE}可用的存储池:${NC}"
-    echo -e "${YELLOW}提示：标记为 ✓ 的存储池支持VM镜像${NC}"
     
     for i in "${!STORAGE_LIST[@]}"; do
         local name="${STORAGE_LIST[$i]}"
         local info="${STORAGE_MAP[$name]}"
         
-        IFS='|' read -r type total used avail supports <<< "$info"
+        IFS='|' read -r type total used avail <<< "$info"
         
-        local mark label
-        if [[ "$supports" == "true" ]]; then
-            mark="${GREEN}✓${NC}"
-            label="支持VM"
-        else
-            mark="${YELLOW}?${NC}"
-            label="可能支持"
-        fi
-        
-        printf "%d) %s %b (类型: %s, 总量: %s, 已用: %s, 可用: %s) [%s]\n" \
-            $((i+1)) "$name" "$mark" "$type" "$total" "$used" "$avail" "$label"
+        printf "%d) %s (类型: %s, 总量: %s, 已用: %s, 可用: %s)\n" \
+            $((i+1)) "$name" "$type" "$total" "$used" "$avail"
     done
     
     while true; do
@@ -569,16 +541,7 @@ select_storage_pool() {
             VM_STORAGE="${STORAGE_LIST[$((choice-1))]}"
             local info="${STORAGE_MAP[$VM_STORAGE]}"
             
-            IFS='|' read -r type total used avail supports <<< "$info"
-            
-            # 不再强制检查，允许用户选择任何存储池
-            if [[ "$supports" != "true" ]]; then
-                print_warning "存储池 '$VM_STORAGE' 可能不支持VM镜像，是否继续？"
-                read -rp "继续使用此存储池? (y/n): " confirm
-                if [[ ! "$confirm" =~ ^[Yy] ]]; then
-                    continue
-                fi
-            fi
+            IFS='|' read -r type total used avail <<< "$info"
             
             print_success "已选择存储池: $VM_STORAGE"
             print_info "存储池信息: 类型=$type, 总量=$total, 可用=$avail"
@@ -717,9 +680,9 @@ create_vm() {
     
     local vm_name="LuoWrt"
     
-    # 验证存储池
-    if ! pvesm status -content images "$VM_STORAGE" >/dev/null 2>&1; then
-        print_error "存储池 '$VM_STORAGE' 不支持VM镜像"
+    # 验证存储池是否可用
+    if ! pvesm status "$VM_STORAGE" >/dev/null 2>&1; then
+        print_error "存储池 '$VM_STORAGE' 不可用"
         return 1
     fi
     
