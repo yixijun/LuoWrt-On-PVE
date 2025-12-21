@@ -680,11 +680,7 @@ create_vm() {
     
     local vm_name="LuoWrt"
     
-    # 验证存储池是否可用
-    if ! pvesm status "$VM_STORAGE" >/dev/null 2>&1; then
-        print_error "存储池 '$VM_STORAGE' 不可用"
-        return 1
-    fi
+    # 存储池已在选择时验证过，直接使用
     
     # 检查EFI固件
     check_efi_firmware
