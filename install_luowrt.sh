@@ -438,55 +438,36 @@ smart_decompress() {
     return 1
 }
 
-
-# 格式化大小显示
-format_size() {
-    local size=$1
+# 格式化字节大小为人类可读格式
+format_bytes() {
+    local bytes=$1
     
-    if ! [[ "$size" =~ ^[0-9]+$ ]]; then
-        echo "$size"
+    if ! [[ "$bytes" =~ ^[0-9]+$ ]] || [ "$bytes" -eq 0 ]; then
+        echo "0B"
         return
     fi
     
-    if [ "$size" -ge 1073741824 ]; then
-        local tb=$((size / 1073741824))
-        local remainder=$((size % 1073741824 * 10 / 1073741824))
+    if [ "$bytes" -ge 1099511627776 ]; then
+        # TB
+        local tb=$((bytes / 1099511627776))
+        local remainder=$(( (bytes % 1099511627776) * 10 / 1099511627776 ))
         [ "$remainder" -gt 0 ] && echo "${tb}.${remainder}TB" || echo "${tb}TB"
-    elif [ "$size" -ge 1048576 ]; then
-        local gb=$((size / 1048576))
-        local remainder=$((size % 1048576 * 10 / 1048576))
+    elif [ "$bytes" -ge 1073741824 ]; then
+        # GB
+        local gb=$((bytes / 1073741824))
+        local remainder=$(( (bytes % 1073741824) * 10 / 1073741824 ))
         [ "$remainder" -gt 0 ] && echo "${gb}.${remainder}GB" || echo "${gb}GB"
-    elif [ "$size" -ge 1024 ]; then
-        local mb=$((size / 1024))
-        local remainder=$((size % 1024 * 10 / 1024))
+    elif [ "$bytes" -ge 1048576 ]; then
+        # MB
+        local mb=$((bytes / 1048576))
+        local remainder=$(( (bytes % 1048576) * 10 / 1048576 ))
         [ "$remainder" -gt 0 ] && echo "${mb}.${remainder}MB" || echo "${mb}MB"
+    elif [ "$bytes" -ge 1024 ]; then
+        # KB
+        local kb=$((bytes / 1024))
+        echo "${kb}KB"
     else
-        echo "${size}KB"
-    fi
-}
-
-# 提取数字大小（转换为KB）
-extract_numeric_size() {
-    local input="$1"
-    
-    if [[ "$input" =~ ^([0-9]+)\.?([0-9]*)TB$ ]]; then
-        local tb="${BASH_REMATCH[1]}"
-        local frac="${BASH_REMATCH[2]:-0}"
-        echo $((tb * 1073741824 + frac * 107374182))
-    elif [[ "$input" =~ ^([0-9]+)\.?([0-9]*)GB$ ]]; then
-        local gb="${BASH_REMATCH[1]}"
-        local frac="${BASH_REMATCH[2]:-0}"
-        echo $((gb * 1048576 + frac * 104858))
-    elif [[ "$input" =~ ^([0-9]+)\.?([0-9]*)MB$ ]]; then
-        local mb="${BASH_REMATCH[1]}"
-        local frac="${BASH_REMATCH[2]:-0}"
-        echo $((mb * 1024 + frac * 102))
-    elif [[ "$input" =~ ^([0-9]+)KB?$ ]]; then
-        echo "${BASH_REMATCH[1]}"
-    elif [[ "$input" =~ ^[0-9]+$ ]]; then
-        echo "$input"
-    else
-        echo "0"
+        echo "${bytes}B"
     fi
 }
 
@@ -494,6 +475,8 @@ extract_numeric_size() {
 get_storage_pools() {
     print_info "正在获取可用的存储池列表..."
     
+    # pvesm status 输出格式: Name Type Status Total Used Available
+    # 数值单位是字节
     local storage_info
     storage_info=$(pvesm status 2>/dev/null | awk 'NR>1')
     
@@ -513,24 +496,39 @@ get_storage_pools() {
         read -ra fields <<< "$line"
         
         local name="${fields[0]}"
-        local content="${fields[1]}"
-        local type="${fields[2]}"
-        local status="${fields[3]}"
-        local total="${fields[4]:-0}"
-        local used="${fields[5]:-0}"
-        local avail="${fields[6]:-0}"
+        local type="${fields[1]}"
+        local status="${fields[2]}"
+        local total="${fields[3]:-0}"
+        local used="${fields[4]:-0}"
+        local avail="${fields[5]:-0}"
         
-        # 检查是否支持VM镜像
+        # 跳过非活动存储
+        if [ "$status" != "active" ]; then
+            continue
+        fi
+        
+        # 检查是否支持VM镜像 - 使用 pvesm 配置检查
         local supports_images="false"
-        if [[ "$content" == *"images"* ]]; then
+        local storage_content
+        storage_content=$(pvesm list "$name" --content images 2>&1)
+        if [ $? -eq 0 ]; then
             supports_images="true"
         fi
         
-        # 格式化显示
+        # 备用方法：检查存储配置
+        if [ "$supports_images" = "false" ]; then
+            local cfg_content
+            cfg_content=$(grep -A10 "^${name}:" /etc/pve/storage.cfg 2>/dev/null | grep "content" | head -1)
+            if [[ "$cfg_content" == *"images"* ]]; then
+                supports_images="true"
+            fi
+        fi
+        
+        # 格式化显示（数值是字节）
         local display_total display_used display_avail
-        display_total=$(format_size "$(extract_numeric_size "$total")")
-        display_used=$(format_size "$(extract_numeric_size "$used")")
-        display_avail=$(format_size "$(extract_numeric_size "$avail")")
+        display_total=$(format_bytes "$total")
+        display_used=$(format_bytes "$used")
+        display_avail=$(format_bytes "$avail")
         
         STORAGE_LIST+=("$name")
         STORAGE_MAP["$name"]="$type|$display_total|$display_used|$display_avail|$supports_images"
@@ -543,7 +541,7 @@ get_storage_pools() {
 # 选择存储池
 select_storage_pool() {
     echo -e "\n${BLUE}可用的存储池:${NC}"
-    echo -e "${YELLOW}提示：请选择支持VM镜像的存储池（标记为 ✓ 的存储池）${NC}"
+    echo -e "${YELLOW}提示：标记为 ✓ 的存储池支持VM镜像${NC}"
     
     for i in "${!STORAGE_LIST[@]}"; do
         local name="${STORAGE_LIST[$i]}"
@@ -554,13 +552,13 @@ select_storage_pool() {
         local mark label
         if [[ "$supports" == "true" ]]; then
             mark="${GREEN}✓${NC}"
-            label="VM镜像"
+            label="支持VM"
         else
-            mark="${RED}✗${NC}"
-            label="仅ISO/备份"
+            mark="${YELLOW}?${NC}"
+            label="可能支持"
         fi
         
-        printf "%d) %s %b (类型: %s, 大小: %s, 已用: %s, 可用: %s) [%s]\n" \
+        printf "%d) %s %b (类型: %s, 总量: %s, 已用: %s, 可用: %s) [%s]\n" \
             $((i+1)) "$name" "$mark" "$type" "$total" "$used" "$avail" "$label"
     done
     
@@ -573,13 +571,17 @@ select_storage_pool() {
             
             IFS='|' read -r type total used avail supports <<< "$info"
             
+            # 不再强制检查，允许用户选择任何存储池
             if [[ "$supports" != "true" ]]; then
-                print_error "存储池 '$VM_STORAGE' 不支持VM镜像"
-                continue
+                print_warning "存储池 '$VM_STORAGE' 可能不支持VM镜像，是否继续？"
+                read -rp "继续使用此存储池? (y/n): " confirm
+                if [[ ! "$confirm" =~ ^[Yy] ]]; then
+                    continue
+                fi
             fi
             
             print_success "已选择存储池: $VM_STORAGE"
-            print_info "存储池信息: 类型=$type, 总大小=$total, 可用空间=$avail"
+            print_info "存储池信息: 类型=$type, 总量=$total, 可用=$avail"
             break
         else
             print_error "无效选择"
